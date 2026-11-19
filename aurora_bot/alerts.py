@@ -373,18 +373,21 @@ def _find_ultra_tariff(tariffs: list[dict]) -> dict | None:
 def _upgrade_offer_buttons(offers: list[dict]) -> list[tuple]:
     rows = []
     for item in offers:
-        emoji = '💎' if item['kind'] == 'DIAMOND' else '⚡'
-        title = button_tariff_name(item['tariff']['title'], item['tariff']['title'], max_len=28)
-        label = f"{emoji} {title} · {fmt_rub(item['rub'])} ₽ (экономия {fmt_rub(item['saved_rub'])} ₽)"
+        title = button_tariff_name(item['tariff']['title'], item['tariff']['title'], max_len=26)
+        if item['kind'] == 'ULTRA':
+            label = f"🔥 Апгрейд до «{title}» · Доплатить {fmt_rub(item['rub'])} ₽"
+        else:
+            emoji = '👑' if item['kind'] == 'DIAMOND' else '⚡'
+            label = f"{emoji} {title} · Доплатить {fmt_rub(item['rub'])} ₽"
         rows.append((cb(label, f"up_pay_options:{item['tariff']['id']}",
                         style='success' if item['kind'] == 'ULTRA' else 'primary'),))
     return rows
 
 
 async def dispatch_abandoned_cart_reminders(
-    bot, db: Database, shop: Shop, *, min_age_seconds: int = 360, limit: int = 10
+    bot, db: Database, shop: Shop, *, min_age_seconds: int = 240, limit: int = 10
 ) -> int:
-    """Remind first-time users after 6 minutes if their checkout stayed unpaid."""
+    """Remind first-time users after 4 minutes if their checkout stayed unpaid."""
     min_age = in_seconds(-min_age_seconds)
     max_age = in_seconds(-4 * 3600)
     day_cutoff = in_seconds(-86400)
@@ -455,19 +458,18 @@ async def dispatch_abandoned_cart_reminders(
                 if quick_promo and disc_rub < order['amount_rub']:
                     d_label = promo_discount_label(quick_promo)
                     promo_note = (
-                        f"\n\n🎁 <b>По промокоду <code>{esc(quick_promo['code'])}</code> доступна скидка {d_label}</b> — "
-                        f"итоговая цена <b>{fmt_rub(disc_rub)} ₽</b> вместо {fmt_rub(order['amount_rub'])} ₽."
+                        f"\n\n🎁 <b>Скидка {d_label} по коду <code>{esc(quick_promo['code'])}</code>:</b> "
+                        f"итого <b>{fmt_rub(disc_rub)} ₽</b> вместо {fmt_rub(order['amount_rub'])} ₽."
                     )
                     buttons.append((cb(
-                        f"🎁 Забрать со скидкой {d_label} · {fmt_rub(disc_rub)} ₽",
+                        f"🎁 Завершить оплату со скидкой · {fmt_rub(disc_rub)} ₽",
                         f"claim_pay:{order['tariff_id']}:{quick_promo['code']}",
                         style='success',
                     ),))
                 else:
-                    buttons.append((cb('💳 Завершить оплату сейчас', pay_cb, style='success'),))
-                buttons.append((cb('🔓 Открыть карточку тарифа', f"tariff:{order['tariff_id']}"),))
+                    buttons.append((cb(f"💳 Завершить оплату · {fmt_rub(order['amount_rub'])} ₽", pay_cb, style='success'),))
             entry_rub = (await shop.user_price(order['user_id'], entry))[0] if entry else 0
-            entry_cb = f"tariff:{entry['id']}" if entry else ''
+            entry_cb = f"pay_options:{entry['id']}" if entry else ''
             if entry and quick_promo:
                 entry_disc_rub, _ = price_with_promo(
                     entry_rub, entry['stars'],
@@ -478,40 +480,15 @@ async def dispatch_abandoned_cart_reminders(
                     entry_cb = f"claim_pay:{entry['id']}:{quick_promo['code']}"
             has_entry = bool(entry and entry['id'] != order['tariff_id'] and entry_rub < order['amount_rub'])
             if has_entry:
-                if entry['duration_days'] == 1:
-                    entry_btn = f"⚡ Начать с 24ч пропуска · {fmt_rub(entry_rub)} ₽"
-                    entry_hint = (
-                        f"💡 Или зайди с 24ч пропуска за {fmt_rub(entry_rub)} ₽ — ссылка прилетит сразу, а все {fmt_rub(entry_rub)} ₽ останутся скидкой на VIP 👇"
-                    )
-                else:
-                    entry_name = button_tariff_name(entry['title'], 'тариф')
-                    entry_term = duration_phrase(entry.get('duration_days'))
-                    top_target = f"«{esc(ultra['title'])}»" if ultra else 'VIP-пакета'
-                    entry_btn = f"⚡ Зайти с «{entry_name}» · {fmt_rub(entry_rub)} ₽"
-                    entry_hint = (
-                        f"💡 Не хочешь сразу брать большой пакет? Открой тариф «{esc(entry['title'])}» за {fmt_rub(entry_rub)} ₽ ({entry_term}) — "
-                        f"эти {fmt_rub(entry_rub)} ₽ потом вычтем из стоимости {top_target} 👇"
-                    )
-                buttons.append((cb(entry_btn, entry_cb, style='primary'),))
-            else:
-                entry_hint = "👇 Жми кнопку ниже и завершай оплату — ссылка сразу упадёт в чат"
-            buttons.append((cb('🔞 Весь каталог', 'catalog'),))
-            if has_entry:
-                text = (
-                    f"👀 <b>Не завершил вход в «{esc(order['title'])}»?</b>\n\n"
-                    "🔒 <b>Безопасно на 100%:</b> оплата строго разовая (Telegram Stars или CryptoBot) — "
-                    "<b>никаких подписок, автосписаний и привязки карты</b>. Личная ссылка приходит в чат сразу."
-                    f"{promo_note}\n\n"
-                    f"{entry_hint}"
-                )
-            else:
-                text = (
-                    f"👀 <b>Твой заказ на «{esc(order['title'])}» ещё открыт</b>\n\n"
-                    "🔒 <b>Безопасно на 100%:</b> оплата строго разовая — <b>без подписок, автосписаний и привязки карты</b>. "
-                    "Доступ к разделу откроется сразу после подтверждения."
-                    f"{promo_note}\n\n"
-                    f"{entry_hint}"
-                )
+                entry_name = button_tariff_name(entry['title'], 'пропуск')
+                buttons.append((cb(f"⚡ Или взять «{entry_name}» · {fmt_rub(entry_rub)} ₽", entry_cb, style='primary'),))
+            buttons.append((cb('📂 Вернуться в каталог', 'catalog'),))
+            text = (
+                f"👀 <b>Ссылка в «{esc(order['title'])}» уже сформирована</b>\n"
+                "Осталось подтвердить вход. Оплата строго разовая — <b>никаких автосписаний и скрытых подписок</b>.\n"
+                "⚡ Персональное приглашение в закрытый канал появится в этом чате сразу после оплаты."
+                f"{promo_note}"
+            )
             if await send_campaign(bot, db, order['user_id'], 'cart', text, kb(*buttons)):
                 sent += 1
     return sent
@@ -538,10 +515,10 @@ async def dispatch_tariff_view_reminders(
     db: Database,
     shop: Shop,
     *,
-    min_age_seconds: int = 360,
+    min_age_seconds: int = 720,
     limit: int = 20,
 ) -> int:
-    """Follow up with users who viewed a tariff card 6m+ ago without starting checkout."""
+    """Follow up with users who viewed a tariff card 12m+ ago without starting checkout."""
     sent = 0
     async with _lock_for(db):
         min_age = in_seconds(-min_age_seconds)
@@ -574,13 +551,12 @@ async def dispatch_tariff_view_reminders(
         catalogs = await shop.catalogs()
         entry = await _find_entry_tariff(shop)
         ultra = _find_ultra_tariff(catalogs)
-        has_diamond = any(tariff_tier_kind(c['title'], c.get('tier', '')) == 'diamond' for c in catalogs)
         for row in rows:
             if await _is_broadcast_opted_out(db, row['user_id']):
                 continue
             claimed = await db.execute(
-                'UPDATE users SET view_reminder_sent=1 WHERE user_id=? AND view_reminder_sent=0 AND last_viewed_at<=?',
-                (row['user_id'], min_age),
+                'UPDATE users SET view_reminder_sent=1, view_reminder_sent_at=? WHERE user_id=? AND view_reminder_sent=0 AND last_viewed_at<=?',
+                (now(), row['user_id'], min_age),
             )
             if not claimed:
                 continue
@@ -591,7 +567,6 @@ async def dispatch_tariff_view_reminders(
                  'title': row['tariff_title'], 'tier': row['tariff_tier']},
             )
             entry_rub = (await shop.user_price(row['user_id'], entry))[0] if entry else 0
-            ultra_rub = (await shop.user_price(row['user_id'], ultra))[0] if ultra else 0
             viewed_name = button_tariff_name(row['tariff_title'], 'тариф', max_len=26)
             buttons: list[tuple] = []
             promo_note = ''
@@ -607,74 +582,34 @@ async def dispatch_tariff_view_reminders(
             if quick_promo and disc_rub < viewed_rub:
                 d_label = promo_discount_label(quick_promo)
                 promo_note = (
-                    f"\n\n🎁 <b>Твоя скидка {d_label} по коду <code>{esc(quick_promo['code'])}</code> активна</b> — "
+                    f"\n\n🎁 <b>Скидка {d_label} по коду <code>{esc(quick_promo['code'])}</code>:</b> "
                     f"доступ выйдет <b>{fmt_rub(disc_rub)} ₽</b> вместо {fmt_rub(viewed_rub)} ₽."
                 )
                 buttons.append((cb(
                     f"🎁 Забрать со скидкой {d_label} · {fmt_rub(disc_rub)} ₽",
-                    f"claim_tariff:{tid}:{quick_promo['code']}",
+                    f"claim_pay:{tid}:{quick_promo['code']}",
                     style='success',
                 ),))
-                buttons.append((cb(f"🔓 Открыть «{viewed_name}»", f'tariff:{tid}'),))
             else:
-                buttons.append((cb(f"🔓 Открыть «{viewed_name}»", f'tariff:{tid}', style='success'),))
-                buttons.append((cb(f"💳 Оплатить сразу · {fmt_rub(viewed_rub)} ₽", f'pay_options:{tid}', style='primary'),))
-            has_entry = bool(entry and entry['id'] != tid and entry_rub < viewed_rub)
-            ultra_eff_rub = ultra_rub
-            viewed_eff_rub = viewed_rub
-            ultra_cb = f"tariff:{ultra['id']}" if ultra else ''
-            if quick_promo and disc_rub < viewed_rub:
-                viewed_eff_rub = disc_rub
-                if ultra and ultra['rub']:
-                    promo_u_rub, _ = price_with_promo(
-                        ultra_rub, ultra['stars'],
-                        quick_promo['discount'], int(quick_promo.get('discount_percent') or 0),
-                    )
-                    if promo_u_rub < ultra_rub:
-                        ultra_eff_rub = promo_u_rub
-                        ultra_cb = f"claim_tariff:{ultra['id']}:{quick_promo['code']}"
-            if has_entry:
-                if entry['duration_days'] == 1:
-                    buttons.append((cb(f"⚡ Начать с 24ч пропуска · {fmt_rub(entry_rub)} ₽", f"tariff:{entry['id']}", style='primary'),))
-                    nudge_text = (
-                        f"💡 Или протестируй резерв с 24ч пропуска за {fmt_rub(entry_rub)} ₽ — всю сумму зачтём в скидку на VIP."
-                    )
-                else:
-                    entry_name = button_tariff_name(entry['title'], 'тариф')
-                    entry_term = duration_phrase(entry.get('duration_days'))
-                    top_target = f"<b>{esc(ultra['title'])}</b>" if ultra else 'VIP-пакет'
-                    buttons.append((cb(f"⚡ Зайти с «{entry_name}» · {fmt_rub(entry_rub)} ₽", f"tariff:{entry['id']}", style='primary'),))
-                    nudge_text = (
-                        f"💡 Или начни с тарифа <b>«{esc(entry['title'])}» за {fmt_rub(entry_rub)} ₽</b> ({entry_term}) — "
-                        f"все <b>{fmt_rub(entry_rub)} ₽</b> останутся твоей скидкой при переходе на {top_target}."
-                    )
-                if ultra and ultra['id'] != tid and ultra_eff_rub > viewed_eff_rub:
-                    buttons.append(_ultra_upsell_button(
-                        ultra, ultra_eff_rub, diff=ultra_eff_rub - viewed_eff_rub, callback_data=ultra_cb,
-                    ))
-            else:
-                if ultra and ultra['id'] != tid and ultra_eff_rub > viewed_eff_rub:
-                    buttons.append(_ultra_upsell_button(
-                        ultra, ultra_eff_rub, diff=ultra_eff_rub - viewed_eff_rub, callback_data=ultra_cb,
-                    ))
-                elif ultra and ultra['id'] != tid:
-                    buttons.append(_ultra_upsell_button(ultra, ultra_eff_rub, callback_data=ultra_cb))
-                if ultra and ultra['id'] != tid:
-                    vip_targets = 'Ultra VIP или Diamond' if has_diamond else 'Ultra VIP'
-                    nudge_text = (
-                        f"💡 Вся оплата с этого тарифа <b>навсегда остаётся скидкой</b> при переходе на {vip_targets} — ты ничего не теряешь."
-                    )
-                else:
-                    nudge_text = (
-                        "💡 Выбирай удобный способ оплаты — доступ откроется сразу без подписок."
-                    )
-            buttons.append((cb('🔞 Весь каталог', 'catalog'),))
+                buttons.append((cb(
+                    f"💳 Забрать «{viewed_name}» · {fmt_rub(viewed_rub)} ₽",
+                    f'pay_options:{tid}',
+                    style='success',
+                ),))
+            if ultra and ultra['id'] != tid:
+                ultra_rub = (await shop.user_price(row['user_id'], ultra))[0]
+                buttons.append((cb(
+                    f"🔥 Или «{ultra['title']}» · {fmt_rub(ultra_rub)} ₽",
+                    f"pay_options:{ultra['id']}",
+                    style='primary',
+                ),))
+            buttons.append((cb('📂 Открыть каталог', 'catalog'),))
             text = (
-                f"🔥 <b>Ты смотрел «{esc(row['tariff_title'])}» — доступ уже готов</b>\n\n"
-                "Весь контент раздела уже загружен в закрытый канал в полном качестве и без цензуры. "
-                "Оплата разовая (Telegram Stars или CryptoBot, без подписок), личная ссылка придёт сразу после оплаты."
-                f"{promo_note}\n\n"
-                f"{nudge_text}"
+                f"🔥 <b>В «{esc(row['tariff_title'])}» уже выложены сегодняшние новинки</b>\n"
+                "Все ролики в HD и со звуком — без цензуры, смайлов и переходов по сторонним сайтам.\n"
+                "• Ссылка в канал приходит сразу после оплаты\n"
+                "• Разовый доступ — без скрытых списаний"
+                f"{promo_note}"
             )
             if await send_campaign(bot, db, row['user_id'], 'view', text, kb(*buttons)):
                 sent += 1
@@ -686,18 +621,18 @@ async def dispatch_trial_upsell_touchpoints(
     db: Database,
     shop: Shop,
     *,
-    post_join_delay_seconds: int = 360,
-    pre_expiry_window_seconds: int = 7200,
+    post_join_delay_seconds: int = 1200,
+    pre_expiry_window_seconds: int = 10800,
     limit: int = 20,
 ) -> int:
-    """Send 6m post-join upgrade-credit push for entry/trial buyers and 2h pre-expiry alert for 24h trials."""
+    """Send 20m post-join upgrade push for entry/trial buyers and 3h pre-expiry alert."""
     sent = 0
     async with _lock_for(db):
         current = now()
         joined_cutoff = in_seconds(-post_join_delay_seconds)
         pre_expiry_cutoff = in_seconds(pre_expiry_window_seconds)
 
-        # 1) ~6 minutes after joining/receiving an entry or 24h tariff without flagship tier yet
+        # 1) ~20 minutes after joining/receiving an entry or trial tariff without flagship tier yet
         post_join_rows = await db.read(
             """SELECT p.id, p.user_id, p.title, p.expires_at,
                       o.channels AS order_channels, o.delivery_urls AS order_urls
@@ -714,8 +649,9 @@ async def dispatch_trial_upsell_touchpoints(
                  AND UPPER(p.title) NOT LIKE '%ULTRA%'
                  AND UPPER(p.title) NOT LIKE '%DIAMOND%'
                  AND UPPER(p.title) NOT LIKE '%BLACK%'
+                 AND UPPER(p.title) NOT LIKE '%ВСЁ СРАЗУ%'
                  AND (
-                     (COALESCE(t.duration_days, o.duration_days)=1 AND p.expires_at IS NOT NULL AND p.expires_at>?)
+                     (COALESCE(t.duration_days, o.duration_days)<=3 AND p.expires_at IS NOT NULL AND p.expires_at>?)
                      OR (COALESCE(t.rub, o.amount_rub) < 1000 AND (p.expires_at IS NULL OR p.expires_at>?))
                  )
                  AND (
@@ -745,40 +681,19 @@ async def dispatch_trial_upsell_touchpoints(
                 continue
             top = next((item for item in offers if item['kind'] == 'ULTRA'), offers[0])
             credit = top.get('saved_rub', top['credit_rub'])
-            top_targets = _tariff_targets(top['tariff'])
-            top_count = len(top_targets) or tariff_channel_count(top['tariff'])
-            active_targets = await _user_active_access_targets(db, row['user_id'])
-            extra_count = len(top_targets - active_targets) if top_targets else 0
-            top_term = duration_phrase(top['tariff'].get('duration_days'))
-            if row['expires_at'] is None:
-                if top['kind'] == 'ULTRA' and extra_count > 0:
-                    headline = (
-                        f"🔥 <b>Уже внутри «{esc(row['title'])}»? Открой ещё {plural_channels(extra_count)} за {fmt_rub(top['rub'])} ₽!</b>"
-                    )
-                else:
-                    headline = (
-                        f"💎 <b>«{esc(row['title'])}» уже открыт — забери «{esc(top['tariff']['title'])}» за {fmt_rub(top['rub'])} ₽!</b>"
-                    )
-                text = (
-                    f"{headline}\n\n"
-                    f"Мы уже зачли оплаченные тобой <b>{fmt_rub(credit)} ₽</b> за «{esc(row['title'])}».\n"
-                    f"🎁 Доплата за <b>{esc(top['tariff']['title'])}</b> — всего <b>{fmt_rub(top['rub'])} ₽</b> (вместо {fmt_rub(top['tariff']['rub'])} ₽), доступ останется {top_term}."
-                )
-            else:
-                if top['kind'] == 'ULTRA' and top_count > 1:
-                    scope_tail = f"и оставайся во всех {top_count} каналах {top_term}."
-                else:
-                    scope_tail = f"и забери полный доступ {top_term}."
-                text = (
-                    "🔥 <b>Ты уже внутри резерва — забирай полный доступ выгодно</b>\n\n"
-                    f"Пока активен «{esc(row['title'])}», можешь забрать <b>{esc(top['tariff']['title'])}</b> "
-                    f"с полным зачётом твоих <b>{fmt_rub(credit)} ₽</b> (доплата всего <b>{fmt_rub(top['rub'])} ₽</b>) — "
-                    f"{scope_tail}"
-                )
+            top_title = esc(top['tariff']['title'])
+            top_base_rub = top['tariff'].get('rub', top['rub'] + credit)
+            text = (
+                f"⚡ <b>Все {fmt_rub(credit)} ₽ сохранены на твоём балансе</b>\n"
+                f"Если решишь забрать <b>«{top_title}» навсегда</b>, эта сумма зачтётся в полном объёме — "
+                f"доплатишь всего <b>{fmt_rub(top['rub'])} ₽</b> вместо {fmt_rub(top_base_rub)} ₽.\n"
+                "Все каналы резерва останутся у тебя навсегда без каких-либо доплат.\n"
+                "👇 <b>Забрать доступ навсегда:</b>"
+            )
             if await send_campaign(bot, db, row['user_id'], 'post_join', text, kb(*_upgrade_offer_buttons(offers))):
                 sent += 1
 
-        # 2) ~2 hours BEFORE 24h trial expiry (Loss Aversion)
+        # 2) ~3 hours BEFORE pass/trial expiry (Loss Aversion)
         pre_expiry_rows = await db.read(
             """SELECT p.id, p.user_id, p.title
                FROM purchases p
@@ -788,7 +703,7 @@ async def dispatch_trial_upsell_touchpoints(
                WHERE COALESCE(u.broadcast_opt_out, 0)=0
                  AND o.status='paid' AND o.provider!='admin' AND o.refund_requested_at IS NULL
                  AND o.order_kind='tariff'
-                 AND COALESCE(t.duration_days, o.duration_days)=1
+                 AND COALESCE(t.duration_days, o.duration_days)<=3
                  AND p.revoked_by_admin=0
                  AND p.pre_expiry_upsell_sent=0
                  AND p.expires_at IS NOT NULL AND p.expires_at>? AND p.expires_at<=?
@@ -810,13 +725,11 @@ async def dispatch_trial_upsell_touchpoints(
             if not offers:
                 continue
             top = next((item for item in offers if item['kind'] == 'ULTRA'), offers[0])
-            credit = top.get('saved_rub', top['credit_rub'])
-            top_term = duration_phrase(top['tariff'].get('duration_days'))
             text = (
-                f"⚠️ <b>Меньше чем через 2 часа твой 24ч доступ «{esc(row['title'])}» закроется</b>\n\n"
-                f"Вместе с доступом сгорит и твой Trade-In зачёт <b>{fmt_rub(credit)} ₽</b>. "
-                f"Успей обновиться до <b>{esc(top['tariff']['title'])}</b> сейчас всего за <b>{fmt_rub(top['rub'])} ₽</b> — "
-                f"доплата в пару тапов, а доступ останется с тобой {top_term}."
+                f"⏳ <b>Твой пропуск в {esc(row['title'])} истекает через 3 часа</b>\n"
+                "После этого ссылка будет деактивирована.\n"
+                f"💡 Чтобы не терять доступ и открыть остальные 3 канала со скидкой за прошлую оплату — "
+                f"обновись до <b>«{esc(top['tariff']['title'])}» навсегда</b>:"
             )
             if await send_campaign(bot, db, row['user_id'], 'pre_expiry', text, kb(*_upgrade_offer_buttons(offers))):
                 sent += 1
@@ -828,11 +741,11 @@ async def dispatch_cold_start_nudges(
     db: Database,
     shop: Shop,
     *,
-    min_age_seconds: int = 300,
+    min_age_seconds: int = 1200,
     max_age_seconds: int = 3 * 3600,
     limit: int = 15,
 ) -> int:
-    """Nudge cold /start leads who opened zero tariff cards after 5 minutes while impulse is still warm."""
+    """Nudge cold /start leads who opened zero tariff cards after 20 minutes while impulse is still warm."""
     min_age = in_seconds(-min_age_seconds)
     max_age = in_seconds(-max_age_seconds)
     sent = 0
@@ -869,58 +782,25 @@ async def dispatch_cold_start_nudges(
             )
             if not claimed:
                 continue
-            quick_promo, _, _ = await available_quick_promo(db, row['user_id'])
             buttons: list[tuple] = []
-            entry_line = ''
             if entry:
                 entry_rub, entry_stars, active_code = await shop.user_price(row['user_id'], entry)
                 entry_cb = f"pay_options:{entry['id']}"
-                if not active_code and quick_promo:
-                    disc_e, _ = price_with_promo(
-                        entry_rub, entry_stars,
-                        quick_promo['discount'], int(quick_promo.get('discount_percent') or 0),
-                    )
-                    if disc_e < entry_rub:
-                        entry_rub = disc_e
-                        entry_cb = f"claim_pay:{entry['id']}:{quick_promo['code']}"
-                entry_name = button_tariff_name(entry['title'], 'базовый доступ', max_len=24)
-                entry_term = duration_phrase(entry.get('duration_days'))
-                buttons.append((cb(f"⚡ Зайти с «{entry_name}» · {fmt_rub(entry_rub)} ₽", entry_cb, style='success'),))
-                top_name = f"<b>{esc(ultra['title'])}</b>" if ultra and ultra['id'] != entry['id'] else 'VIP-пакет'
-                entry_line = (
-                    f"⚡ <b>Минимальный старт:</b> «{esc(entry['title'])}» — всего <b>{fmt_rub(entry_rub)} ₽</b> ({entry_term}). "
-                    f"Вся сумма зачтётся скидкой, если позже решишь перейти на {top_name}."
-                )
+                entry_btn = f"⚡ Пропуск TikTok (3 дн.) · {fmt_rub(entry_rub)} ₽"
+                buttons.append((cb(entry_btn, entry_cb),))
             if ultra and (not entry or ultra['id'] != entry['id']):
                 ultra_rub, ultra_stars, active_code = await shop.user_price(row['user_id'], ultra)
-                ultra_cb = f"tariff:{ultra['id']}"
-                if not active_code and quick_promo:
-                    disc_u, _ = price_with_promo(
-                        ultra_rub, ultra_stars,
-                        quick_promo['discount'], int(quick_promo.get('discount_percent') or 0),
-                    )
-                    if disc_u < ultra_rub:
-                        ultra_rub = disc_u
-                        ultra_cb = f"claim_tariff:{ultra['id']}:{quick_promo['code']}"
-                u_name = button_tariff_name(ultra['title'], 'Ultra VIP', max_len=24)
-                u_ch = tariff_channel_count(ultra)
-                u_scope = plural_channels(u_ch) if u_ch > 1 else duration_phrase(ultra.get('duration_days'))
-                buttons.append((cb(
-                    f"⭐️ {u_name} ({u_scope}) · {fmt_rub(ultra_rub)} ₽",
-                    ultra_cb,
-                    style='primary' if entry else 'success',
-                ),))
-            buttons.append((cb('🔞 Открыть весь каталог', 'catalog'),))
+                ultra_cb = f"pay_options:{ultra['id']}"
+                ultra_btn = f"🔥 ВСЁ СРАЗУ (Навсегда) · {fmt_rub(ultra_rub)} ₽"
+                buttons.append((cb(ultra_btn, ultra_cb, style='success'),))
+            buttons.append((cb('📂 Открыть полный каталог', 'catalog'),))
             text = (
-                "👀 <b>Не знаешь, с какого раздела начать?</b>\n\n"
-                f"{entry_line}\n\n"
-                "🔒 <b>Оплата строго разовая</b> (Telegram Stars или @CryptoBot, без подписок) — "
-                "личная ссылка придёт сюда сразу после подтверждения 👇"
-            ) if entry_line else (
-                "👀 <b>Доступ к закрытым каналам открывается за пару кликов</b>\n\n"
-                "🔒 Оплата строго разовая (Telegram Stars или @CryptoBot, без подписок) — "
-                "личная ссылка приходит прямо в этот чат 👇"
+                "👋 <b>Не определился с разделом?</b>\n"
+                "Большинство начинает с одного из двух вариантов:\n"
+                "1. <b>Пропуск TikTok (190 ₽)</b> — если нужен конкретный тренд прямо сейчас\n"
+                "2. <b>«ВСЁ СРАЗУ» (990 ₽)</b> — навсегда открыть все 4 закрытых канала (выходит ~248 ₽ за канал)"
             )
             if await send_campaign(bot, db, row['user_id'], 'cold_nudge', text, kb(*buttons)):
                 sent += 1
+    return sent
     return sent

@@ -114,7 +114,7 @@ class PromoAndReviewPushTests(unittest.IsolatedAsyncioTestCase):
         with patch('aurora_bot.handlers_user.send_section', new_callable=AsyncMock) as send_section:
             await public.claim_promo_one_click(claim_call, self.shop, self.db)
         buttons = [button for row in send_section.await_args.args[2].inline_keyboard for button in row]
-        self.assertFalse(any('₽' in button.text for button in buttons))
+        self.assertTrue(any('₽' in button.text for button in buttons))
         self.assertIn('LUXURYNEW', send_section.await_args.args[1]['value'])
         self.assertEqual((await self.shop.profile(101))['active_promo'], 'LUXURYNEW')
 
@@ -144,7 +144,7 @@ class PromoAndReviewPushTests(unittest.IsolatedAsyncioTestCase):
         await self.db.set_setting('promo_push_enabled', '1')
         await self.db.set_setting('promo_push_mode', 'personal')
         await self.db.set_setting('promo_push_prefix', 'PERS')
-        await self.db.set_setting('promo_push_discount', '200')
+        await self.db.set_setting('promo_push_discount', '150')
         await self.db.set_setting('promo_push_ttl_hours', '24')
         await self.db.set_setting('promo_push_delay_min', '15')
         await self.db.execute('UPDATE users SET first_start_at=? WHERE user_id=101', (in_seconds(-20 * 60),))
@@ -155,7 +155,7 @@ class PromoAndReviewPushTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(code.startswith('PERS_'))
 
         promo = await self.db.read('SELECT * FROM promos WHERE code=?', (code,))
-        self.assertEqual((promo['owner_user_id'], promo['discount'], promo['max_uses'], promo['is_personal']), (101, 200, 1, 1))
+        self.assertEqual((promo['owner_user_id'], promo['discount'], promo['max_uses'], promo['is_personal']), (101, 150, 1, 1))
         self.assertIsNotNone(promo['expires_at'])
 
         # Another user cannot activate Alice's personal promo code
@@ -342,7 +342,7 @@ class PromoAndReviewPushTests(unittest.IsolatedAsyncioTestCase):
 
             migrated = Database(db_path)
             await migrated.init()
-            self.assertEqual((await migrated.read('PRAGMA user_version'))['user_version'], 28)
+            self.assertEqual((await migrated.read('PRAGMA user_version'))['user_version'], 29)
             user_cols = {r['name'] for r in await migrated.read('PRAGMA table_info(users)', many=True)}
             promo_cols = {r['name'] for r in await migrated.read('PRAGMA table_info(promos)', many=True)}
             self.assertTrue({'promo_push_sent', 'promo_push_code', 'promo_push_sent_at', 'last_review_push_at'} <= user_cols)
@@ -358,6 +358,7 @@ class PromoAndReviewPushTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_admin_ui_screens_edits_and_promo_review_cooldown(self):
         # 1) Promo push admin flow: screen -> mode switch -> edit prefix/discount/delay/text -> toggle -> test
+        await self.db.set_setting('promo_push_mode', 'shared')
         with patch.object(admin, 'screen', new_callable=AsyncMock) as scr:
             await admin.promo_push_home(self.admin_call('adm:ppush'), self.db)
         self.assertIn('Авто-пуш промокодом', scr.await_args.args[1])
@@ -476,7 +477,7 @@ class PromoAndReviewPushTests(unittest.IsolatedAsyncioTestCase):
         await self.db.set_setting('review_push_enabled', '1')
         await self.db.set_setting('review_push_interval_hours', '0')
         await self.db.execute('UPDATE users SET first_start_at=? WHERE user_id=101',
-                              (in_seconds(-3 * 3600),))
+                              (in_seconds(-5 * 3600),))
         await admin.review_add_receive(self.admin_msg(photo=[NS(file_id='review-photo')]), self.db)
         bot = NS(
             send_message=AsyncMock(side_effect=TelegramRetryAfter(
@@ -652,9 +653,9 @@ class PromoAndReviewPushTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('Скидка <b>25%</b>', pscr.await_args.args[1])
 
         # 2) Pricing + order settlement + user promo UI
-        t1 = await self.shop.get_tariff(1)  # 240 RUB, 125 Stars
+        t1 = await self.shop.get_tariff(1)  # 190 RUB, 100 Stars
         expected_rub, expected_stars = price_with_promo(t1['rub'], t1['stars'], 0, 25)
-        self.assertEqual(expected_rub, 180)  # 240 - 60 = 180
+        self.assertEqual(expected_rub, 142)  # 190 - 48 = 142
         self.assertGreater(expected_stars, 0)
 
         await self.shop.activate_promo(101, 'VIP20')
@@ -685,7 +686,7 @@ class PromoAndReviewPushTests(unittest.IsolatedAsyncioTestCase):
             )
             await uhandlers.show_catalog(cat_msg, self.shop, self.db, page=0)
         cat_btns = [btn.text for row in usend.await_args.args[2].inline_keyboard for btn in row]
-        self.assertFalse(any('₽' in b for b in cat_btns), cat_btns)
+        self.assertTrue(any('₽' in b for b in cat_btns), cat_btns)
         self.assertIn('VIP20', usend.await_args.args[1]['value'])
         self.assertIn('25%', usend.await_args.args[1]['value'])
 
@@ -757,7 +758,7 @@ class PromoAndReviewPushTests(unittest.IsolatedAsyncioTestCase):
             con.close()
             migrated = Database(v24_path)
             await migrated.init()
-            self.assertEqual((await migrated.read('PRAGMA user_version'))['user_version'], 28)
+            self.assertEqual((await migrated.read('PRAGMA user_version'))['user_version'], 29)
             rub50 = await migrated.read("SELECT discount, discount_percent FROM promos WHERE code='RUB50'")
             self.assertEqual((rub50['discount'], rub50['discount_percent']), (50, 0))
 

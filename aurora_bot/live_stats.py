@@ -8,7 +8,7 @@ from .db import Database
 from .service import Shop, parse_date, tariff_tier_kind
 
 _MSK = timezone(timedelta(hours=3))
-_ANCHOR_DATE = date(2026, 1, 1)
+_ANCHOR_DATE = date(2026, 11, 1)
 
 
 def _now_msk() -> datetime:
@@ -21,13 +21,10 @@ _CUMULATIVE_PAST_CACHE: dict[tuple[date, str, int], int] = {}
 _MAX_CACHE_ENTRIES = 20_000
 
 _FALLBACK_TARIFFS = (
-    {'id': 1, 'title': '⚡ Базовый · Фуллы из TikTok', 'active': 1},
-    {'id': 2, 'title': '🎀 Альтушки и стримерши [30д]', 'active': 1},
-    {'id': 3, 'title': '🍑 OnlyFans & Fansly [30д]', 'active': 1},
-    {'id': 4, 'title': '😈 Скрытый архив: Лички [30д]', 'active': 1},
-    {'id': 5, 'title': '⭐️ Ultra VIP: 5 каналов [ХИТ]', 'active': 1},
-    {'id': 6, 'title': '👑 Diamond Club: Все базы', 'active': 1},
-    {'id': 7, 'title': '🖤 Black VIP: Все архивы [4K]', 'active': 1},
+    {'id': 1, 'title': '⚡ Пропуск: Фуллы TikTok (3 дн.)', 'active': 1},
+    {'id': 2, 'title': '🎀 Стримерши + 18+ подборки (30 дн.)', 'active': 1},
+    {'id': 3, 'title': '🔥 ВСЁ СРАЗУ · 4 канала навсегда', 'active': 1, 'tier': 'ultra'},
+    {'id': 4, 'title': '👑 VIP MAX · Архивы + Заказы', 'active': 1, 'tier': 'diamond'},
 )
 
 
@@ -36,25 +33,25 @@ def _tariff_profile(tariff: dict) -> tuple[str, int, int]:
     tid = int(tariff.get('id') or 0)
     t_up = (tariff.get('title') or '').upper()
     tier_kind = tariff_tier_kind(tariff.get('title', ''), tariff.get('tier', ''))
-    if tier_kind == 'diamond':
-        kind, weight, base = 'diamond', 5, 180
-    elif tier_kind == 'ultra' or '[ТОП]' in t_up or '[ХИТ]' in t_up:
-        kind, weight, base = 'ultra', 45, 1520
+    if tier_kind == 'diamond' or 'VIP MAX' in t_up:
+        kind, weight, base = 'diamond', 8, 180
+    elif tier_kind == 'ultra' or 'ВСЁ СРАЗУ' in t_up or 'ВСЕ СРАЗУ' in t_up or 'ULTRA' in t_up:
+        kind, weight, base = 'ultra', 25, 360
     elif 'BLACK' in t_up:
-        kind, weight, base = 'black', 2, 65
-    elif any(k in t_up for k in ('БАЗОВ', '24 ЧАСА', '24Ч', 'ПРОПУСК', 'ТЕСТ-ДРАЙВ', 'ПРОБН')):
-        kind, weight, base = 'base', 28, 920
+        kind, weight, base = 'black', 3, 90
+    elif any(k in t_up for k in ('ПРОПУСК', 'TIKTOK', 'БАЗОВ', '24 ЧАСА', '24Ч', '3 ДН', 'ТЕСТ')):
+        kind, weight, base = 'base', 18, 280
+    elif any(k in t_up for k in ('СТРИМЕР', 'АЛЬТУШК', '18+')):
+        kind, weight, base = 'altushki', 14, 220
     elif 'ONLYFANS' in t_up:
-        kind, weight, base = 'onlyfans', 20, 680
-    elif 'АЛЬТУШК' in t_up or 'TIKTOK' in t_up:
-        kind, weight, base = 'altushki', 16, 520
-    elif 'СКРЫТЫЙ АРХИВ' in t_up or 'TABOO' in t_up or 'VIP-АРХИВ' in t_up:
-        kind, weight, base = 'taboo', 6, 210
+        kind, weight, base = 'onlyfans', 10, 200
+    elif 'СКРЫТЫЙ АРХИВ' in t_up or 'TABOO' in t_up:
+        kind, weight, base = 'taboo', 6, 170
     else:
         custom_hash = int(hashlib.md5(f'custom_{tid}'.encode()).hexdigest()[:6], 16)
         kind = 'custom'
-        weight = 3 + (custom_hash % 2)
-        base = 120 + ((custom_hash >> 4) % 90)
+        weight = 4 + (custom_hash % 2)
+        base = 150 + ((custom_hash >> 4) % 100)
     return f'{kind}:{tid}', weight, base
 
 

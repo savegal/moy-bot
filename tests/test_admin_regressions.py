@@ -359,7 +359,7 @@ class AdminRegressionTests(unittest.IsolatedAsyncioTestCase):
         await self.db.register(202, 'cold', 'Cold')
         await self.db.register(303, 'whale', 'Whale')
         await self.db.register(404, 'admingrant', 'Free')
-        await self.db.execute("UPDATE tariffs SET channel_ids='-100222',duration_days=0 WHERE id=5")
+        await self.db.execute("UPDATE tariffs SET channel_ids='-100222',duration_days=0,active=1 WHERE id=5")
 
         o_entry = await self.shop.create_order(101, 1, 'stars')
         await self.shop.settle_stars(o_entry['id'], 101, o_entry['amount_stars'], 'bcast-entry')
@@ -661,7 +661,7 @@ class AdminRegressionTests(unittest.IsolatedAsyncioTestCase):
             await admin.tariff_media_save(bad_msg, self.state, self.db, self.shop)
             self.assertNotIn('удалить', bad_msg.answer.await_args.args[0])
 
-        await self.db.execute('UPDATE tariffs SET description=? WHERE id=?', ('D' * 650, tid))
+        await self.db.execute('UPDATE tariffs SET description=? WHERE id=?', ('D' * 750, tid))
         with patch.object(admin, 'screen', new_callable=AsyncMock) as screen:
             await admin.tariff_details(self.call(f'adm:t:{tid}'), self.shop)
         self.assertIn('Превышен лимит подписи с медиа', screen.await_args.args[1])

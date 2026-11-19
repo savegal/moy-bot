@@ -157,8 +157,16 @@ async def push_settings(db: Database) -> dict[str, str]:
 async def refresh_push_brand(db: Database, settings: dict[str, str], key: str) -> dict[str, str]:
     row = await db.read("""SELECT
         (SELECT value FROM settings WHERE key='project_name') AS project_name,
-        (SELECT value FROM settings WHERE key=?) AS template""", (key,))
-    return {**settings, 'project_name': row['project_name'] or DEFAULT_PROJECT_NAME, key: row['template'] or ''}
+        (SELECT value FROM settings WHERE key=?) AS template,
+        (SELECT media_id FROM settings WHERE key=?) AS media_id,
+        (SELECT media_type FROM settings WHERE key=?) AS media_type""", (key, key, key))
+    return {
+        **settings,
+        'project_name': (row or {}).get('project_name') or DEFAULT_PROJECT_NAME,
+        key: (row or {}).get('template') or '',
+        'media_id': (row or {}).get('media_id') or '',
+        'media_type': (row or {}).get('media_type') or '',
+    }
 
 
 def _sanitized_prefix(raw: str) -> str:
@@ -287,8 +295,8 @@ async def prepare_promo_push(db: Database, user: dict, *,
         discount=discount_label if discount_percent > 0 else str(discount),
         ttl_note=ttl_note,
     )
-    second_btn = cb('🔞 Открыть каталог со скидкой', f'claim_promo:{code}', style='primary')
     viewed_tid = user.get('last_viewed_tariff_id') if not dry_run else None
+    second_btn = None
     if viewed_tid:
         viewed = await db.read(
             """SELECT id, title FROM tariffs
@@ -298,17 +306,18 @@ async def prepare_promo_push(db: Database, user: dict, *,
         if viewed:
             v_label = button_tariff_name(viewed['title'], 'тариф', max_len=20)
             second_btn = cb(f'🔓 «{v_label}» со скидкой', f"claim_tariff:{viewed['id']}:{code}", style='primary')
-    markup = kb(
-        (cb(f'🎁 Активировать скидку {discount_label} · {code}', f'claim_promo:{code}', style='success'),),
-        (second_btn,),
-    )
+    btn_text = f'🎟 Применить промокод · {discount_label}' if is_personal else f'🎟 Применить промокод · {discount_label} · {code}'
+    rows = [(cb(btn_text, f'claim_promo:{code}', style='success'),)]
+    if second_btn:
+        rows.append((second_btn,))
+    markup = kb(*rows)
     return text, markup, code, is_personal
 
 
 async def build_review_push(db: Database, shop: Shop, user: dict, review: dict, *,
                             settings: dict[str, str] | None = None,
                             is_paying: bool | None = None) -> tuple[str, object]:
-    """Build (caption, markup) for a review-screenshot push."""
+    """Build (caption, markup) for a review-screenshot push (clean, no promo buttons)."""
     cfg = settings or await push_settings(db)
     project_name = cfg.get('project_name') or DEFAULT_PROJECT_NAME
     reviews_url = (cfg.get('reviews_url') or '').strip()
@@ -327,24 +336,8 @@ async def build_review_push(db: Database, shop: Shop, user: dict, review: dict, 
         )
     if is_paying is None:
         is_paying = await shop.is_paying_user(user['user_id'])
-    cta_label = '🔥 Другие разделы и апгрейд' if is_paying else '🔞 Выбрать доступ в каталоге'
+    cta_label = '🔥 Другие разделы и апгрейд' if is_paying else '📂 Смотреть свежие заливы'
     rows: list[tuple] = [(cb(cta_label, 'catalog', style='success'),)]
-    if not is_paying and user.get('user_id'):
-        saved_code = (user.get('promo_push_code') or '').strip().upper()
-        active_code = (user.get('active_promo') or '').strip().upper()
-        if saved_code and not active_code:
-            promo_row = await db.read(
-                """SELECT code, discount, discount_percent FROM promos
-                   WHERE code=? AND enabled=1 AND used<max_uses
-                     AND (discount>0 OR COALESCE(discount_percent,0)>0)
-                     AND (owner_user_id IS NULL OR owner_user_id=?)
-                     AND (expires_at IS NULL OR expires_at>?)
-                     AND NOT EXISTS (SELECT 1 FROM promo_redemptions WHERE code=promos.code AND user_id=?)""",
-                (saved_code, user['user_id'], now(), user['user_id']),
-            )
-            if promo_row:
-                d_label = promo_discount_label(promo_row)
-                rows.append((cb(f"🎁 Активировать скидку {d_label} · {promo_row['code']}", f"claim_promo:{promo_row['code']}", style='primary'),))
     if is_https_url(reviews_url):
         rows.append((link('⭐ Все отзывы в канале ↗', reviews_url),))
     return caption, kb(*rows)
@@ -410,7 +403,12 @@ async def send_promo_push_to_user(
             else:
                 text, markup, code, _ = payload
                 touch_id, markup = await prepare_campaign(db, user_id, 'promo', markup)
-                await _send_push_text(bot, user_id, text, markup, retry_flood=retry_flood)
+                media_id = settings.get('media_id') or ''
+                media_type = settings.get('media_type') or 'photo'
+                if media_id:
+                    await _send_push_media(bot, user_id, media_id, media_type, text, markup, retry_flood=retry_flood)
+                else:
+                    await _send_push_text(bot, user_id, text, markup, retry_flood=retry_flood)
                 await campaign_delivered(db, touch_id)
     except (TelegramAPIError, TimeoutError) as exc:
         retry_at = _retry_at(exc)
@@ -707,7 +705,7 @@ async def dispatch_promo_expiry_reminders(
                 continue
             code = row['code']
             d_label = promo_discount_label(row)
-            rem = remaining_time_label(row['expires_at']) or 'меньше часа'
+            rem = remaining_time_label(row['expires_at']) or '30 минут'
             buttons: list[tuple] = []
             viewed = None
             if row.get('last_viewed_tariff_id'):
@@ -722,32 +720,26 @@ async def dispatch_promo_expiry_reminders(
                     viewed['rub'], viewed['stars'],
                     row['discount'], int(row.get('discount_percent') or 0),
                 )
-                buttons.append((cb(f'🔥 Оплатить «{v_name}» · {fmt_rub(v_disc)} ₽', f"claim_pay:{viewed['id']}:{code}", style='success'),))
-                buttons.append((cb(f'🎁 Открыть «{v_name}» (-{d_label})', f"claim_tariff:{viewed['id']}:{code}", style='primary'),))
+                buttons.append((cb(f'⚡ Оформить со скидкой {d_label} · {fmt_rub(v_disc)} ₽', f"claim_pay:{viewed['id']}:{code}", style='success'),))
             else:
                 entry = await db.read(
                     """SELECT id, title, rub, stars FROM tariffs
                        WHERE active=1 AND (channel_ids!='' OR delivery_urls!='[]' OR allow_no_channel=1)
-                       ORDER BY CASE WHEN duration_days=1 THEN 0 ELSE 1 END, rub ASC, stars ASC, id ASC
+                       ORDER BY CASE WHEN duration_days<=3 THEN 0 ELSE 1 END, rub ASC, stars ASC, id ASC
                        LIMIT 1"""
                 )
                 if entry:
-                    e_name = button_tariff_name(entry['title'], 'базовый доступ', max_len=20)
+                    e_name = button_tariff_name(entry['title'], 'пропуск', max_len=20)
                     e_disc, _ = price_with_promo(
                         entry['rub'], entry['stars'],
                         row['discount'], int(row.get('discount_percent') or 0),
                     )
-                    buttons.append((cb(f'🔥 Зайти с «{e_name}» · {fmt_rub(e_disc)} ₽', f"claim_pay:{entry['id']}:{code}", style='success'),))
-            buttons.append((cb(
-                f'🔞 Выбрать тариф со скидкой {d_label}',
-                f'claim_promo:{code}',
-                style='primary' if not buttons else None,
-            ),))
+                    buttons.append((cb(f'⚡ Оформить со скидкой {d_label} · {fmt_rub(e_disc)} ₽', f"claim_pay:{entry['id']}:{code}", style='success'),))
+            buttons.append((cb('📂 Открыть каталог со скидкой', f'claim_promo:{code}'),))
             text = (
-                f"⏳ <b>Через {rem} сгорит твоя скидка {d_label}</b>\n\n"
-                f"Персональный промокод <code>{esc(code)}</code> для доступа в <b>{esc(project_name)}</b> "
-                "скоро перестанет действовать.\n\n"
-                "Успей забрать доступ по сниженной цене — оплата разовая, без подписок."
+                f"⏳ <b>Твоя персональная скидка {d_label} сгорает через {rem}</b>\n"
+                "После этого промокод аннулируется, а цены вернутся к базовым.\n"
+                "👇 <b>Зафиксировать скидку до сгорания:</b>"
             )
             touch_id, tracked_markup = await prepare_campaign(db, row['user_id'], 'promo_exp', kb(*buttons))
             if await safe_send_push_text(bot, row['user_id'], text, tracked_markup):
@@ -761,23 +753,18 @@ async def dispatch_winback_pushes(
     db: Database,
     shop: Shop,
     *,
-    min_age_hours: int = 24,
+    min_age_hours: int = 28,
     max_age_days: int = 7,
-    ttl_hours: int = 24,
+    ttl_hours: int = 12,
     limit: int = 15,
 ) -> int:
-    """Send a single 24h second-wave winback with a deeper personal discount to non-buying cold leads."""
+    """Send a single winback push with 30% discount to non-buying cold leads after 28 hours."""
     del shop
     cfg = await push_settings(db)
     if cfg.get('promo_push_enabled') != '1' or (cfg.get('promo_push_mode') or 'shared') != 'personal':
         return 0
-    base_disc, base_pct = parse_push_discount(cfg.get('promo_push_discount'))
-    if base_pct > 0:
-        wb_disc, wb_pct = 0, min(45, base_pct + 15)
-    elif base_disc > 0:
-        wb_disc, wb_pct = min(500, base_disc + 100), 0
-    else:
-        return 0
+    wb_pct = 30
+    wb_disc = 0
 
     project_name = cfg.get('project_name') or DEFAULT_PROJECT_NAME
     now_ts = now()
@@ -812,10 +799,15 @@ async def dispatch_winback_pushes(
         )
         if not rows:
             return 0
+        ultra = await db.read(
+            """SELECT id, title, rub, stars FROM tariffs
+               WHERE active=1 AND (LOWER(tier)='ultra' OR UPPER(title) LIKE '%ВСЁ СРАЗУ%' OR UPPER(title) LIKE '%ВСЕ СРАЗУ%')
+               LIMIT 1"""
+        )
         entry = await db.read(
             """SELECT id, title, rub, stars FROM tariffs
                WHERE active=1 AND (channel_ids!='' OR delivery_urls!='[]' OR allow_no_channel=1)
-               ORDER BY CASE WHEN duration_days=1 THEN 0 ELSE 1 END, rub ASC, stars ASC, id ASC
+               ORDER BY CASE WHEN duration_days<=3 THEN 0 ELSE 1 END, rub ASC, stars ASC, id ASC
                LIMIT 1"""
         )
         for row in rows:
@@ -826,48 +818,33 @@ async def dispatch_winback_pushes(
             if not claimed:
                 continue
             promo = await create_personal_promo(
-                db, row['user_id'], 'LAST', wb_disc, ttl_hours, discount_percent=wb_pct,
+                db, row['user_id'], 'WIN', wb_disc, ttl_hours, discount_percent=wb_pct,
             )
             code = promo['code']
             await db.execute(
                 'UPDATE users SET promo_push_code=?, promo_expiry_reminder_sent=1 WHERE user_id=?',
                 (code, row['user_id']),
             )
-            d_label = promo_discount_label(promo)
             buttons: list[tuple] = []
-            viewed = None
-            if row.get('last_viewed_tariff_id'):
-                viewed = await db.read(
-                    """SELECT id, title, rub, stars FROM tariffs
-                       WHERE id=? AND active=1 AND (channel_ids!='' OR delivery_urls!='[]' OR allow_no_channel=1)""",
-                    (row['last_viewed_tariff_id'],),
-                )
-            if viewed:
-                v_name = button_tariff_name(viewed['title'], 'тариф', max_len=20)
-                v_disc, _ = price_with_promo(viewed['rub'], viewed['stars'], wb_disc, wb_pct)
-                buttons.append((cb(
-                    f'🔥 Забрать «{v_name}» · {fmt_rub(v_disc)} ₽ (-{d_label})',
-                    f"claim_pay:{viewed['id']}:{code}",
-                    style='success',
-                ),))
-            if entry and (not viewed or entry['id'] != viewed['id']):
-                e_name = button_tariff_name(entry['title'], 'базовый доступ', max_len=20)
+            if ultra:
+                u_disc, _ = price_with_promo(ultra['rub'], ultra['stars'], wb_disc, wb_pct)
+                buttons.append((cb(f'🔥 Забрать «ВСЁ СРАЗУ» навсегда за {fmt_rub(u_disc)} ₽', f"claim_pay:{ultra['id']}:{code}", style='success'),))
+            if entry:
                 e_disc, _ = price_with_promo(entry['rub'], entry['stars'], wb_disc, wb_pct)
-                buttons.append((cb(
-                    f'⚡ Минимальный вход «{e_name}» · {fmt_rub(e_disc)} ₽',
-                    f"claim_pay:{entry['id']}:{code}",
-                    style='primary' if viewed else 'success',
-                ),))
-            buttons.append((cb(f'🔞 Весь каталог со скидкой {d_label}', f'claim_promo:{code}'),))
-            name = esc((row.get('name') or '').strip() or 'друг')
+                e_name = button_tariff_name(entry['title'], 'пропуск')
+                buttons.append((cb(f'⚡ Взять «{e_name}» за {fmt_rub(e_disc)} ₽', f"claim_pay:{entry['id']}:{code}"),))
+            buttons.append((cb('📂 Открыть весь каталог со скидкой 30%', f'claim_promo:{code}'),))
             text = (
-                f"🔥 <b>{name}, финальный спецпропуск -{d_label} в {esc(project_name)}</b>\n\n"
-                f"Прошлая скидка сгорела, но для тебя открыта последняя закрытая цена по коду "
-                f"<code>{esc(code)}</code> (действует <b>{ttl_hours} ч.</b>).\n\n"
-                "🔒 <b>Разовый вход без подписок</b> — ссылка в закрытый канал придёт сюда сразу после оплаты 👇"
+                f"👋 <b>Давно не заходил в {esc(project_name)}</b>\n"
+                "За это время в архивы выгрузили больше 40 новых эксклюзивных роликов.\n"
+                "Мы выдали тебе финальный промокод на <b>максимальную скидку -30%</b>. Он действует ровно 12 часов:\n"
+                "• Пропуск TikTok (3 дн.): <b>133 ₽</b> вместо 190 ₽\n"
+                "• «ВСЁ СРАЗУ» навсегда: <b>693 ₽</b> вместо 990 ₽\n"
+                "👇 <b>Активируй в 1 клик, пока действует скидка:</b>"
             )
             touch_id, tracked_markup = await prepare_campaign(db, row['user_id'], 'winback', kb(*buttons))
             if await safe_send_push_text(bot, row['user_id'], text, tracked_markup):
                 await campaign_delivered(db, touch_id)
                 sent += 1
+    return sent
     return sent

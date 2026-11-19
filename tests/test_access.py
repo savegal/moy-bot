@@ -266,15 +266,15 @@ class AccessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.bot.messages, [])
 
     async def test_expiry_upsell_push_sent_once_and_skipped_when_ultra_owned(self):
-        await self.db.execute("UPDATE tariffs SET channel_ids='-100111,-100222' WHERE id=5")
+        await self.db.execute("UPDATE tariffs SET channel_ids='-100111,-100222' WHERE id=3")
         order = await self.paid()
         await self.access.provision(self.bot)
         self.bot.messages.clear()
         await self.db.execute('UPDATE purchases SET expires_at=?', (in_seconds(-1),))
         await self.access.revoke_expired(self.bot)
         self.assertEqual(len(self.bot.messages), 1)
-        self.assertIn('240 ₽', self.bot.messages[0][1])
-        self.assertIn('950 ₽', self.bot.messages[0][1])
+        self.assertIn('190 ₽', self.bot.messages[0][1])
+        self.assertIn('800 ₽', self.bot.messages[0][1])
 
         await self.access.revoke_expired(self.bot)
         self.assertEqual(len(self.bot.messages), 1)
@@ -283,7 +283,7 @@ class AccessTests(unittest.IsolatedAsyncioTestCase):
         await self.db.register(202, 'vip', 'VIP')
         o_trial = await self.shop.create_order(202, 1, 'stars')
         await self.shop.settle(o_trial['id'], 'stars', charge_id='vip-1')
-        o_ultra = await self.shop.create_order(202, 5, 'stars')
+        o_ultra = await self.shop.create_order(202, 3, 'stars')
         await self.shop.settle(o_ultra['id'], 'stars', charge_id='vip-2')
         self.bot.messages.clear()
         await self.db.execute("UPDATE purchases SET expires_at=? WHERE order_id=?", (in_seconds(-1), o_trial['id']))
@@ -305,19 +305,21 @@ class AccessTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_whale_radar_alerts_vip_high_ticket_custom_and_ltv_once(self):
         cfg = Config('123:mock', frozenset({901, 902}))
-        await self.db.execute("UPDATE tariffs SET channel_ids='-100111' WHERE id IN (2, 5)")
+        await self.db.execute("UPDATE tariffs SET channel_ids='-100111' WHERE id IN (2, 3)")
 
-        # Low-ticket 350 RUB order: no alert
+        # Low-ticket 190 RUB order: no alert
         small = await self.paid()
         await maintain_access(self.bot, self.db, self.access, cfg)
         self.assertEqual([uid for uid, _ in self.bot.messages if uid in cfg.admin_ids], [])
         self.assertEqual((await self.db.read('SELECT whale_alert_sent FROM orders WHERE id=?', (small['id'],)))['whale_alert_sent'], 1)
 
-        # Cumulative LTV crosses 1500 RUB (350 + 690 + 690 = 1730) -> alerts both admins once
+        # Cumulative LTV crosses 1500 RUB (190 + 590 + 590 + 590 = 1960) -> alerts both admins once
         o2 = await self.shop.create_order(101, 2, 'stars')
         await self.shop.settle(o2['id'], 'stars', charge_id='w-ltv-2')
         o3 = await self.shop.create_order(101, 2, 'stars')
         await self.shop.settle(o3['id'], 'stars', charge_id='w-ltv-3')
+        o4 = await self.shop.create_order(101, 2, 'stars')
+        await self.shop.settle(o4['id'], 'stars', charge_id='w-ltv-4')
         self.bot.messages.clear()
         sent = await dispatch_whale_alerts(self.bot, self.db, cfg)
         self.assertEqual(sent, 1)
@@ -328,8 +330,8 @@ class AccessTests(unittest.IsolatedAsyncioTestCase):
 
         # High-ticket Diamond tariff purchase triggers admin whale alert too
         await self.db.register(303, 'rich', 'Rich')
-        await self.db.execute("UPDATE tariffs SET channel_ids='-1003' WHERE id=6")
-        hi_ord = await self.shop.create_order(303, 6, 'cryptopay')
+        await self.db.execute("UPDATE tariffs SET channel_ids='-1003' WHERE id=4")
+        hi_ord = await self.shop.create_order(303, 4, 'cryptopay')
         await self.shop.set_external(hi_ord['id'], 'cryptopay', 'cp-rich', 'https://t.me/CryptoBot?start=Rich')
         await self.shop.settle(hi_ord['id'], 'cryptopay', external_id='cp-rich')
         self.bot.messages.clear()
@@ -375,7 +377,7 @@ class AccessTests(unittest.IsolatedAsyncioTestCase):
         await self.db.execute('UPDATE orders SET created_at=? WHERE id=?', (in_seconds(-30 * 60), o_buyer['id']))
         # User 303: pending only 5 min -> too early
         o_fresh = await self.shop.create_order(303, 2, 'stars')
-        await self.db.execute('UPDATE orders SET created_at=? WHERE id=?', (in_seconds(-5 * 60), o_fresh['id']))
+        await self.db.execute('UPDATE orders SET created_at=? WHERE id=?', (in_seconds(-2 * 60), o_fresh['id']))
         # User 404: pending 6 hours ago -> stale, outside 4h window
         o_ancient = await self.shop.create_order(404, 2, 'stars')
         await self.db.execute('UPDATE orders SET created_at=? WHERE id=?', (in_seconds(-6 * 3600), o_ancient['id']))
@@ -391,8 +393,8 @@ class AccessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(count, 1)
         self.assertEqual([uid for uid, _, _ in sent_calls], [202])
         cbs = [b.callback_data.split(':', 2)[2] for row in sent_calls[0][2].inline_keyboard for b in row]
-        self.assertIn('tariff:2', cbs)
-        self.assertIn('tariff:1', cbs)
+        self.assertIn('pay_options:2', cbs)
+        self.assertIn('pay_options:1', cbs)
         self.assertIn('catalog', cbs)
         # Re-running does not send duplicate reminder
         self.assertEqual(await dispatch_abandoned_cart_reminders(markup_bot, self.db, self.shop), 0)

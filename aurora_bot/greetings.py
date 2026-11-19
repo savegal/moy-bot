@@ -16,7 +16,7 @@ from .ui import cb, kb, link, rendered_section, send_text
 
 log = logging.getLogger(__name__)
 WELCOME_CHAT_TYPES = ('channel', 'supergroup')
-WELCOME_CATALOG_BUTTON = '🔞 Открыть каталог фуллов'
+WELCOME_CATALOG_BUTTON = '📂 Открыть архив фуллов →'
 
 
 async def _welcome_approval_allowed(db: Database, job: dict) -> bool:

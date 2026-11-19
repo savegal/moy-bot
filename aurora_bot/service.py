@@ -209,9 +209,9 @@ def tariff_tier_kind(title: str = '', tier: str = '') -> str:
     if explicit in ('diamond', 'ultra'):
         return explicit
     title_up = (title or '').upper()
-    if 'DIAMOND' in title_up:
+    if 'DIAMOND' in title_up or 'VIP MAX' in title_up:
         return 'diamond'
-    if 'ULTRA' in title_up:
+    if 'ULTRA' in title_up or 'ВСЁ СРАЗУ' in title_up:
         return 'ultra'
     return ''
 

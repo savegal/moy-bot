@@ -31,7 +31,7 @@ from .legal import get_terms_of_service, get_privacy_policy
 from .ui import (
     button_tariff_name, cb, kb, link, esc, duration, duration_phrase, fmt_rub, is_https_url, is_menu_navigation_text,
     menu, plural_channels, product_text, remaining_time_label, rendered_section, send_section, send_text,
-    tariff_channel_count, tariff_view_media, MENU_CATALOG, MENU_PROFILE, MENU_HELP, MENU_HELP_SIMPLE, MENU_INFO,
+    tariff_channel_count, tariff_view_media, MENU_CATALOG, MENU_ACCESS, MENU_REVIEWS, MENU_PROFILE, MENU_HELP, MENU_HELP_SIMPLE, MENU_INFO,
     MENU_STATS_PREFIX,
 )
 
@@ -158,9 +158,12 @@ async def welcome(message: Message, db: Database, shop: Shop, config: Config, st
         elif deep_arg in ('privacy', 'policy'):
             await send_text(message.answer, get_privacy_policy(project_name), await _help_back_markup(db))
             return
+        elif deep_arg.startswith('g_'):
+            await show_catalog(message, shop, db, section_key='catalog')
+            return
 
-    await send_welcome_message(message, db, message.from_user.full_name, is_new=existing is None)
-    await show_catalog(message, shop, db)
+    section_key = 'welcome' if existing is None else 'welcome_back'
+    await show_catalog(message, shop, db, section_key=section_key)
 
     if message.from_user.id in config.admin_ids:
         await message.answer(
@@ -192,11 +195,16 @@ async def cancel(message: Message, state: FSMContext):
 # --- Catalog ---
 
 def _catalog_button_label(tariff: dict) -> str:
-    """Return clean tariff title on catalog buttons so pricing appears only inside cards."""
+    """Return clean tariff title with price directly on button."""
+    if tariff.get('rub'):
+        return f"{tariff['title']} · {fmt_rub(tariff['rub'])} ₽"
+    if tariff.get('stars'):
+        return f"{tariff['title']} · {tariff['stars']} ⭐"
     return tariff['title']
 
 
-async def show_catalog(target: Message | CallbackQuery, shop: Shop, db: Database, page: int = 0):
+async def show_catalog(target: Message | CallbackQuery, shop: Shop, db: Database, page: int = 0,
+                       section_key: str = 'catalog'):
     tariffs = await shop.catalogs()
     promo = await shop.user_promo(target.from_user.id) if tariffs else None
     page_size = 10
@@ -205,7 +213,7 @@ async def show_catalog(target: Message | CallbackQuery, shop: Shop, db: Database
     for t in tariffs[page * page_size:(page + 1) * page_size]:
         raw_title = t['title']
         tier_kind = tariff_tier_kind(raw_title, t.get('tier', ''))
-        style = 'primary' if tier_kind == 'ultra' or raw_title.rstrip().upper().endswith(('[ТОП]', '[ХИТ]')) else None
+        style = 'success' if tier_kind == 'ultra' else None
         rows.append([cb(_catalog_button_label(t), f"tariff:{t['id']}", style=style)])
     navigation = []
     if page:
@@ -224,7 +232,7 @@ async def show_catalog(target: Message | CallbackQuery, shop: Shop, db: Database
             )])
     if tariffs and hasattr(shop, 'upgrade_offers'):
         rows.extend(list(r) for r in await paying_perk_rows(shop, db, target.from_user.id))
-    row = await rendered_section(db, 'catalog', name=target.from_user.full_name)
+    row = await rendered_section(db, section_key, name=target.from_user.full_name)
     if not tariffs:
         row['value'] = 'Каталог временно пуст. Новые товары появятся здесь после публикации.'
     elif promo:
@@ -266,10 +274,31 @@ async def _render_tariff_view(call: CallbackQuery, shop: Shop, tid: int, *, is_p
         getattr(call.from_user, 'username', None) or '',
         getattr(call.from_user, 'full_name', None) or '',
     )
-    await shop.db.execute(
-        'UPDATE users SET last_viewed_tariff_id=?, last_viewed_at=?, view_reminder_sent=0 WHERE user_id=?',
-        (tid, now(), call.from_user.id),
-    )
+    # 24h cooldown on resetting view_reminder_sent
+    user_row = await shop.db.read('SELECT view_reminder_sent_at FROM users WHERE user_id=?', (call.from_user.id,))
+    sent_at_str = (user_row or {}).get('view_reminder_sent_at')
+    should_reset_reminder = True
+    if sent_at_str:
+        try:
+            sent_dt = datetime.fromisoformat(sent_at_str)
+            if sent_dt.tzinfo is None:
+                sent_dt = sent_dt.replace(tzinfo=timezone.utc)
+            if (datetime.now(timezone.utc) - sent_dt).total_seconds() < 86400:
+                should_reset_reminder = False
+        except ValueError:
+            pass
+
+    if should_reset_reminder:
+        await shop.db.execute(
+            'UPDATE users SET last_viewed_tariff_id=?, last_viewed_at=?, view_reminder_sent=0 WHERE user_id=?',
+            (tid, now(), call.from_user.id),
+        )
+    else:
+        await shop.db.execute(
+            'UPDATE users SET last_viewed_tariff_id=?, last_viewed_at=? WHERE user_id=?',
+            (tid, now(), call.from_user.id),
+        )
+
     rub, stars, code = await shop.user_price(call.from_user.id, t)
     buyers = None if is_preview else await get_live_tariff_buyers(shop, shop.db, t)
     offers = await shop.upgrade_offers(call.from_user.id)
@@ -408,46 +437,39 @@ async def _stars_invoice_for_order(bot: Bot, shop: Shop, db: Database, order: di
 
 
 async def _send_checkout_screen(target_msg: Message, db: Database, order: dict, invoice_url: str, *,
-                                  title: str, crypto_cb: str, back_cb: str,
-                                  credit_rub: int = 0, payments: Payments | None = None):
+                                title: str, crypto_cb: str, back_cb: str,
+                                credit_rub: int = 0, payments: Payments | None = None):
     stars = order['amount_stars']
     rub = order['amount_rub']
     code = order['promo_code']
-    heading = f"💎 <b>Оформление доступа: {esc(title)}</b>"
-    term_line = f"🕘 Срок доступа: <b>{duration(order['duration_days'])}</b>"
+    clean_title = esc(title)
+    term = duration(order['duration_days'])
+
+    price_txt = f"<b>{fmt_rub(rub)} ₽</b> (или <b>{fmt_rub(stars)} ⭐</b>)" if rub else f"<b>{fmt_rub(stars)} ⭐</b>"
+
     extra_line = ''
     if credit_rub:
-        extra_line = f"🎁 Зачтено из прошлых оплат: <b>{fmt_rub(credit_rub)} ₽</b>\n"
+        extra_line = f"\n🎁 Зачтено из прошлых оплат: <b>{fmt_rub(credit_rub)} ₽</b>"
     elif code:
         promo_row = await db.read('SELECT expires_at FROM promos WHERE code=?', (code,))
         rem = remaining_time_label((promo_row or {}).get('expires_at'))
         rem_note = f' · ещё {rem}' if rem else ''
-        extra_line = f"🏷 Промокод <b>{esc(code)}</b> активирован{rem_note} (скидка учтена!)\n"
-    if order['channels'] != '[]' or order['delivery_urls'] != '[]':
-        footer_note = '\n⚡️ <b>Моментальная автовыдача:</b> ссылка в закрытый канал придёт в этот чат сразу после оплаты.\n'
-    else:
-        footer_note = '\n🧾 Подтверждение покупки придёт в этот чат.\n'
-    has_crypto = bool(payments and payments.crypto_enabled)
-    rub_line = f"💎 Через @CryptoBot (USDT / TON): <b>{fmt_rub(rub)} ₽</b>\n" if has_crypto else ''
-    crypto_tip = ''
-    if has_crypto and rub:
-        if stars * 1.9 > rub * 1.25:
-            crypto_tip = '💡 <i>Через @CryptoBot заметно выгоднее — внутри доступны USDT, TON и P2P.</i>\n'
-        else:
-            crypto_tip = '💡 <i>В @CryptoBot можно оплатить балансом, TON или картой через P2P.</i>\n'
-    text = (f"{heading}\n\n"
-            f"{term_line}\n"
-            f"{rub_line}"
-            f"⭐ В Telegram Stars: <b>{fmt_rub(stars)} Stars</b>\n"
-            f"{extra_line}"
-            f"{footer_note}"
-            f"{crypto_tip}"
-            "🔒 <i>Платежи строго разовые — никаких подписок и автосписаний.</i>")
-    row = await db.setting('payment') or {}
+        extra_line = f"\n🏷 Промокод <b>{esc(code)}</b>{rem_note} учтён"
+
+    text = (
+        f"💳 <b>Оформление: {clean_title}</b>\n"
+        f"🕘 Срок: <b>{term}</b>\n"
+        f"💰 К оплате: {price_txt}{extra_line}\n"
+        f"⚡ Ссылка на закрытый канал прилетит сюда сразу после оплаты.\n"
+        f"🔒 <i>Оплата разовая — без подписок и автосписаний.</i>"
+    )
+
     rows = []
-    if has_crypto:
-        rows.append((cb(f'💎 CryptoBot (USDT / TON) — {fmt_rub(rub)} ₽', crypto_cb, style='primary'),))
-    rows.append((link(f'⭐ Оплатить {fmt_rub(stars)} Telegram Stars', invoice_url, style='success'),))
+    has_crypto = bool(payments and payments.crypto_enabled)
+    rows.append((link(f'⭐ Оплатить {fmt_rub(stars)} Stars', invoice_url, style='success'),))
+    if has_crypto and rub:
+        rows.append((cb(f'💎 CryptoBot (USDT / TON) · {fmt_rub(rub)} ₽', crypto_cb),))
+
     if not code and not credit_rub and order.get('order_kind') == 'tariff' and order.get('tariff_id') and rub:
         quick_promo, _, _ = await available_quick_promo(db, order['user_id'])
         if quick_promo:
@@ -461,8 +483,10 @@ async def _send_checkout_screen(target_msg: Message, db: Database, order: dict, 
                     f"claim_pay:{order['tariff_id']}:{quick_promo['code']}",
                     style='primary',
                 ),))
-    rows.append((cb('◀️ Назад', back_cb),))
-    await send_section(target_msg, {**row, 'value': text}, markup=kb(*rows))
+
+    back_label = '◀️ Назад к описанию' if back_cb.startswith('tariff:') else '◀️ Назад'
+    rows.append((cb(back_label, back_cb),))
+    await send_text(target_msg.answer, text, markup=kb(*rows))
 
 
 async def _configured_support_url(db: Database) -> str:
@@ -854,7 +878,7 @@ async def _send_profile(target_message: Message, user_obj, shop: Shop, db: Datab
         promo_line = 'Не применён'
     project_name = await db.project_name()
     text = (
-        f"👤 <b>Личный кабинет участника {esc(project_name)}</b>\n\n"
+        f"👤 <b>Профиль · {esc(project_name)}</b>\n\n"
         f"🆔 Твой ID: <code>{uid}</code>\n"
         f"👤 Профиль: <b>{esc(full_name)}</b>\n"
         f"🗓️ В клубе с: <b>{reg_date}</b>\n\n"
@@ -935,22 +959,35 @@ async def notifications(call: CallbackQuery, db: Database):
     )
 
 
+@router.message(F.text.in_({MENU_ACCESS, '🔓 Мои доступы'}))
+async def accesses_message(message: Message, shop: Shop):
+    await my_accesses(message, shop, page=0)
+
+
 @router.callback_query(F.data == 'accesses')
 @router.callback_query(F.data.regexp(r'^accesses:[0-9]{1,8}$'))
-async def my_accesses(call: CallbackQuery, shop: Shop):
-    await call.answer()
+async def my_accesses(target: Message | CallbackQuery, shop: Shop, page: int = 0):
+    if hasattr(target, 'message') and getattr(target, 'message', None) is not None:
+        user_id = target.from_user.id
+        msg = target.message
+        if hasattr(target, 'answer'):
+            await target.answer()
+        if hasattr(target, 'data') and ':' in (getattr(target, 'data', '') or ''):
+            page = int(target.data.partition(':')[2] or 0)
+    else:
+        user_id = target.from_user.id
+        msg = target
     page_size = 5
-    page = int(call.data.partition(':')[2] or 0)
-    purchases = await shop.purchases(call.from_user.id, limit=page_size + 1, offset=page * page_size)
-    perks = await paying_perk_rows(shop, shop.db, call.from_user.id) if page == 0 else []
+    purchases = await shop.purchases(user_id, limit=page_size + 1, offset=page * page_size)
+    perks = await paying_perk_rows(shop, shop.db, user_id) if page == 0 else []
     if not purchases and not page:
-        return await call.message.answer(
+        return await msg.answer(
             '🔒 <b>У тебя пока нет активных доступов к каналам.</b>\n\n'
             'В каталоге уже открыты все закрытые подборки и VIP-архивы — выбирай тариф и забирай доступ 🔥',
             reply_markup=kb((cb('🔐 Открыть каталог', 'catalog', style='success'),), *perks))
     for listed in purchases[:page_size]:
         async with shop.delivery_lock:
-            purchase = await shop.purchase_for_user(call.from_user.id, listed['id'])
+            purchase = await shop.purchase_for_user(user_id, listed['id'])
             grants = await shop.purchase_grants(purchase['id']) if purchase else []
         if not purchase:
             continue
@@ -980,7 +1017,7 @@ async def my_accesses(call: CallbackQuery, shop: Shop):
                 else:
                     rows.append((cb(f'🔄 Канал {index} · получить ссылку', f"refresh:{grant['id']}",
                                     style='primary'),))
-        await asyncio.wait_for(call.message.answer(
+        await asyncio.wait_for(msg.answer(
             f"🔓 <b>{esc(purchase['title'])}</b>\n📌 Статус: <b>{state}</b>\n🕘 Срок: <b>{expiry}</b>"
             f"\n🧾 Покупка №{purchase['id']}",
             reply_markup=kb(*rows) if rows else None), timeout=10)
@@ -990,7 +1027,7 @@ async def my_accesses(call: CallbackQuery, shop: Shop):
     if len(purchases) > page_size:
         buttons.append(cb('Следующие ▶️', f'accesses:{page + 1}'))
     if buttons:
-        await call.message.answer(f'Мои доступы · страница {page + 1}', reply_markup=kb(buttons))
+        await msg.answer(f'Мои доступы · страница {page + 1}', reply_markup=kb(buttons))
     if perks:
         upgrade_btns = [
             btn for row in perks for btn in row
@@ -1006,7 +1043,7 @@ async def my_accesses(call: CallbackQuery, shop: Shop):
                 '👑 <b>VIP-привилегии участника</b>\n',
                 f'• Апгрейд до <b>{tier_label}</b> с полным зачётом прошлых покупок',
             ]
-            await call.message.answer('\n'.join(perk_lines), reply_markup=kb(*perks))
+            await msg.answer('\n'.join(perk_lines), reply_markup=kb(*perks))
 
 
 @router.callback_query(F.data.regexp(r'^refresh:[0-9]{1,16}$'))
@@ -1031,7 +1068,7 @@ async def refresh_invite(call: CallbackQuery, access: AccessManager, bot: Bot):
 @router.callback_query(F.data == 'promo')
 async def promo_start(call: CallbackQuery, state: FSMContext):
     await state.set_state(UserInput.promo)
-    await call.message.answer(
+    await msg.answer(
         '🎫 <b>Активация промокода</b>\n\n'
         'Отправь секретный промокод из рассылки или акции в ответном сообщении.\n\n'
         'Для отмены нажми: /cancel'
@@ -1254,7 +1291,7 @@ async def privacy_cmd(message: Message, db: Database):
 
 # --- Info ---
 
-@router.message(F.text.in_({MENU_INFO, '≡ Информация', 'Информация', 'ℹ️ Информация'}))
+@router.message(F.text.in_({MENU_REVIEWS, MENU_INFO, '⭐ Отзывы и обновления', '≡ Информация', 'Информация', 'ℹ️ Информация'}))
 async def info_message(message: Message, db: Database):
     reviews_url = ''
     if await reviews_visible(db):

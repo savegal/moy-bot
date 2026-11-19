@@ -18,15 +18,22 @@ from aiogram.types import (
 from .db import DEFAULT_PROJECT_NAME, Database, DEFAULT_SETTINGS
 from .service import channels_of, tariff_tier_kind
 
-MENU_CATALOG = '🔞 Каталог фуллов'
+MENU_CATALOG = '📂 Каталог фуллов'
+MENU_ACCESS = '🔓 Мои доступы'
+MENU_REVIEWS = '⭐ Отзывы и обновления'
+MENU_HELP = '💬 Помощь / Промо'
+
+MENU_LEGACY_CATALOG = '🔞 Каталог фуллов'
 MENU_PROFILE = '👤 Профиль / Промокод'
-MENU_HELP = '💬 Помощь / Отзывы'
 MENU_HELP_SIMPLE = '💬 Помощь'
 MENU_INFO = '💎 Гарантии клуба'
 MENU_STATS_PREFIX = '🔥 Live-покупки'
 
 _MENU_EXACT_ITEMS = frozenset({
-    MENU_CATALOG, MENU_PROFILE, MENU_HELP, MENU_HELP_SIMPLE, MENU_INFO,
+    MENU_CATALOG, MENU_ACCESS, MENU_REVIEWS, MENU_HELP,
+    MENU_LEGACY_CATALOG, MENU_PROFILE, MENU_HELP_SIMPLE, MENU_INFO,
+    '📂 Каталог фуллов', '🔓 Мои доступы', '⭐ Отзывы и обновления', '💬 Помощь / Промо',
+    '🔞 Каталог фуллов', '👤 Профиль / Промокод', '💬 Помощь / Отзывы', '💎 Гарантии клуба',
     '🔐 Доступ к контенту', '👤 Мой аккаунт', '❓ Помощь/Отзывы', 'ℹ️ Информация',
     '◈ Каталог', 'Каталог', '◇ Мой аккаунт', 'Мой аккаунт',
     '☏ Помощь', 'Помощь', '≡ Информация', 'Информация',
@@ -194,105 +201,73 @@ def button_tariff_name(title: str | None, fallback: str = 'тариф', max_len:
 
 def _conversion_nudge(tariff: dict, rub_price: int | None, upgrade: dict | None,
                       *, allow_vip_nudge: bool = True) -> str:
-    """Return a concise value-contrast or risk-reversal cue tailored to the tariff tier."""
-    if upgrade or not rub_price:
-        return ''
-    tier_kind = tariff_tier_kind(tariff.get('title', ''), tariff.get('tier', ''))
-    days = int(tariff.get('duration_days') or 0)
-    base_rub = int(tariff.get('rub') or rub_price)
-    title_up = (tariff.get('title') or '').upper()
-    if tier_kind == 'ultra':
-        ch_count = tariff_channel_count(tariff)
-        term_txt = duration_phrase(days)
-        if ch_count > 1:
-            per_ch = max(1, rub_price // ch_count)
-            ch_txt = plural_channels(ch_count)
-            if rub_price < 3000 and days == 0:
-                return f'🔥 <b>Выбор 8 из 10:</b> все <b>{ch_txt} {term_txt}</b> — всего <b>~{fmt_rub(per_ch)} ₽ за канал</b>.'
-            return f'🔥 <b>Хит резерва:</b> все <b>{ch_txt} {term_txt}</b> (~{fmt_rub(per_ch)} ₽/канал) без подписок.'
-        return f'🔥 <b>Хит резерва:</b> доступ {term_txt} одним платежом — выгодно без подписок.'
-    if tier_kind == 'diamond':
-        ch_count = tariff_channel_count(tariff)
-        scope = f'все <b>{plural_channels(ch_count)}</b>' if ch_count > 1 else 'все каналы'
-        return f'💎 <b>Максимум выгоды:</b> {scope} и облачные MEGA-архивы остаются у тебя навсегда.'
-    if 'BLACK' in title_up or (days == 0 and base_rub >= 3500):
-        return '🖤 <b>Всё под ключ:</b> максимальный VIP-статус, полные 4K-архивы и резервные зеркала навсегда.'
-    if not allow_vip_nudge:
-        return ''
-    if days > 0:
-        return '⚡ <b>Trade-In гарантия:</b> при переходе на старший пакет вся оплата зачтётся — доплатишь только разницу.'
-    return f'🎁 <b>Trade-In гарантия:</b> все <b>{fmt_rub(rub_price)} ₽</b> останутся скидкой при переходе на VIP.'
+    """Return empty string; 2026 texts integrate hints into descriptions directly."""
+    del tariff, rub_price, upgrade, allow_vip_nudge
+    return ''
 
 
 def product_text(tariff: dict, stars: int, *, buyers: int | None = None, promo: str = '',
                  rub: int | None = None, upgrade: dict | None = None,
                  allow_vip_nudge: bool = True) -> str:
+    del allow_vip_nudge
     details = buyers is None
     title = esc(tariff['title'])
     heading = f'👀 <b>Что внутри «{title}»?</b>' if details else f'🔐 <b>{title}</b>'
-    description = tariff.get('preview_description', '') if details else ''
-    description = (description or tariff['description']).strip()[:650]
+    description = (tariff.get('preview_description', '') if details else tariff.get('description', '')).strip()
     blocks = [heading]
     if description:
-        quote = f'<blockquote>{esc(description)}</blockquote>'
-        blocks.append(quote if details else f'<b>Описание</b>\n{quote}')
+        blocks.append(f'<blockquote>{esc(description)}</blockquote>')
 
-    term = duration(tariff['duration_days'])
+    term = duration(tariff.get('duration_days', 0))
     rub_price = tariff.get('rub') if rub is None else rub
     base_rub = tariff.get('rub')
     base_stars = tariff.get('stars', stars)
+
     if upgrade:
-        applied_credit = upgrade.get('saved_rub', upgrade['credit_rub'])
-        base_rub_hint = f' (~{base_rub} ₽)' if base_rub else ''
+        applied_credit = upgrade.get('saved_rub', upgrade.get('credit_rub', 0))
         price = (
-            f'🕘 Срок доступа: <b>{term}</b>\n'
-            f'⭐ Обычная цена: <s>{base_stars} Stars{base_rub_hint}</s>\n'
-            f"⚡ <b>Цена апгрейда для тебя: {upgrade['stars']} Stars (~{upgrade['rub']} ₽)</b>\n"
-            f'🎁 Зачёт прошлых покупок: <b>{applied_credit} ₽</b>'
+            f'🕘 Доступ: <b>{term}</b>\n'
+            f'💳 Обычная цена: <s>{base_stars} Stars (~{fmt_rub(base_rub)} ₽)</s>\n'
+            f"⚡ <b>Цена апгрейда: {fmt_rub(upgrade['rub'])} ₽</b> <i>(или {upgrade['stars']} ⭐)</i>\n"
+            f'💡 Твоя оплата за предыдущий раздел зачтена на 100% (скидка {fmt_rub(applied_credit)} ₽)'
         )
     else:
         if promo and rub_price:
             if base_rub and base_rub > rub_price:
                 price = (
-                    f'🕘 Срок доступа: <b>{term}</b>\n'
-                    f'⭐ Цена: <b>{stars} Stars</b> (<s>{fmt_rub(base_rub)} ₽</s> → <b>{fmt_rub(rub_price)} ₽</b>)'
-                    f'\n🏷 Промокод <b>{esc(promo)}</b>'
+                    f'🕘 Доступ: <b>{term}</b>\n'
+                    f'💳 Стоимость: <b>{fmt_rub(rub_price)} ₽</b> <i>(или {stars} ⭐)</i> <s>{fmt_rub(base_rub)} ₽</s>\n'
+                    f'🏷 Промокод <b>{esc(promo)}</b>'
                 )
             else:
                 price = (
-                    f'🕘 Срок доступа: <b>{term}</b>\n'
-                    f'⭐ Стоимость: <b>{stars} Stars</b> (~{fmt_rub(rub_price)} ₽)'
-                    f'\n🏷 Промокод <b>{esc(promo)}</b>'
+                    f'🕘 Доступ: <b>{term}</b>\n'
+                    f'💳 Стоимость: <b>{fmt_rub(rub_price)} ₽</b> <i>(или {stars} ⭐)</i>\n'
+                    f'🏷 Промокод <b>{esc(promo)}</b>'
                 )
         elif rub_price:
-            anchor_rub = int(round(rub_price / 0.65 / 10)) * 10
             price = (
-                f'🕘 Срок доступа: <b>{term}</b>\n'
-                f'⭐ Цена: <b>{stars} Stars</b> (<s>{fmt_rub(anchor_rub)} ₽</s> → <b>{fmt_rub(rub_price)} ₽</b>)'
+                f'🕘 Доступ: <b>{term}</b>\n'
+                f'💳 Стоимость: <b>{fmt_rub(rub_price)} ₽</b> <i>(или {stars} ⭐)</i>'
             )
         else:
-            price = f'🕘 Срок доступа: <b>{term}</b>\n⭐ Стоимость: <b>{stars} Stars</b>'
+            price = (
+                f'🕘 Доступ: <b>{term}</b>\n'
+                f'💳 Стоимость: <b>{stars} ⭐</b>'
+            )
             if promo:
                 price += f'\n🏷 Промокод <b>{esc(promo)}</b>'
     blocks.append(price)
+
     if buyers is not None:
-        count = f'{buyers:,}'.replace(',', '\u00a0')
-        blocks.append(f'👥 Уже приобрели: <b>{count}</b>')
-    delivery = ('⚡️ <b>Автовыдача 24/7:</b> ссылка придёт сюда сразу после оплаты.\n'
-                '🔒 <b>Разовый платёж:</b> без подписок — доступ сохранится в «Мои доступы».')
+        count = f'{buyers:,}'.replace(',', ' ')
+        blocks.append(f'👥 Внутри уже: <b>{count} чел.</b>')
+
     if details:
-        delivery = ('🔐 <b>Что внутри доступа</b>\nПерсональная ссылка на доступ к выбранному разделу.\n\n'
-                    + delivery)
-    cta = 'Жми «Апгрейд», чтобы доплатить только разницу.' if upgrade else 'Жми «Получить доступ» и выбери удобную оплату.'
-    if tariff.get('allow_no_channel'):
-        delivery = '🔒 <b>Разовый платёж:</b> подтверждение покупки придёт сюда после оплаты.'
-        cta = 'Жми «Получить доступ», чтобы оформить покупку.'
-    blocks.append(delivery)
-    cta_block = f'🔽 <i>{cta}</i>'
-    nudge = _conversion_nudge(tariff, rub_price, upgrade, allow_vip_nudge=allow_vip_nudge)
-    if nudge and _utf16_len('\n\n'.join([*blocks, nudge, cta_block])) <= 930:
-        blocks.append(nudge)
-    blocks.append(cta_block)
+        blocks.append('⚡ Ссылка в закрытый канал приходит сразу после оплаты.')
+    else:
+        blocks.append('⚡ Ссылка в чат за 5 секунд · Разовая оплата без подписок')
+
     return '\n\n'.join(blocks)
 
 
@@ -322,15 +297,18 @@ def is_https_url(value: str) -> bool:
 
 def menu(project_name: str = DEFAULT_PROJECT_NAME, *, show_reviews: bool = True,
          show_help: bool = True) -> ReplyKeyboardMarkup:
-    stats_label = f"{MENU_STATS_PREFIX} {project_name[:80]}".strip()
-    second_row = [KeyboardButton(text=MENU_INFO)]
+    del project_name
+    second_row = []
+    if show_reviews:
+        second_row.append(KeyboardButton(text=MENU_REVIEWS))
     if show_help:
-        second_row.insert(0, KeyboardButton(text=MENU_HELP if show_reviews else MENU_HELP_SIMPLE))
-    return ReplyKeyboardMarkup(keyboard=[
-        [KeyboardButton(text=MENU_CATALOG, style='success'), KeyboardButton(text=MENU_PROFILE)],
-        second_row,
-        [KeyboardButton(text=stats_label)],
-    ], resize_keyboard=True, is_persistent=True)
+        second_row.append(KeyboardButton(text=MENU_HELP))
+    rows = [
+        [KeyboardButton(text=MENU_CATALOG, style='success'), KeyboardButton(text=MENU_ACCESS)],
+    ]
+    if second_row:
+        rows.append(second_row)
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, is_persistent=True)
 
 
 class _PlainHTML(HTMLParser):

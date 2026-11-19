@@ -14,7 +14,7 @@ from aurora_bot.service import Shop
 from aurora_bot.legal import get_terms_of_service, get_privacy_policy
 from aurora_bot.ui import (
     button_tariff_name, menu, duration, product_text, rendered_section, validate_section_html,
-    MENU_CATALOG, MENU_PROFILE, MENU_HELP, MENU_INFO,
+    MENU_CATALOG, MENU_ACCESS, MENU_REVIEWS, MENU_PROFILE, MENU_HELP, MENU_INFO,
 )
 from aurora_bot.handlers_user import (
     get_live_recent_purchases, info_message, promo_finish, render_help_message,
@@ -46,17 +46,16 @@ class MenuAndUITests(unittest.TestCase):
     def test_menu_structure_and_emojis(self):
         kb = menu("LuxuryHub")
         buttons = [[b.text for b in row] for row in kb.keyboard]
-        self.assertEqual(len(buttons), 3)
-        self.assertEqual(buttons[0], [MENU_CATALOG, MENU_PROFILE])
-        self.assertEqual(buttons[1], [MENU_HELP, MENU_INFO])
-        self.assertEqual(buttons[2], ["🔥 Live-покупки LuxuryHub"])
+        self.assertEqual(len(buttons), 2)
+        self.assertEqual(buttons[0], [MENU_CATALOG, MENU_ACCESS])
+        self.assertEqual(buttons[1], [MENU_REVIEWS, MENU_HELP])
         self.assertEqual([[b.style for b in row] for row in kb.keyboard],
-                         [['success', None], [None, None], [None]])
+                         [['success', None], [None, None]])
 
         kb_no_help = menu("LuxuryHub", show_help=False)
         self.assertEqual(
             [[b.text for b in row] for row in kb_no_help.keyboard],
-            [[MENU_CATALOG, MENU_PROFILE], [MENU_INFO], ["🔥 Live-покупки LuxuryHub"]],
+            [[MENU_CATALOG, MENU_ACCESS], [MENU_REVIEWS]],
         )
 
     def test_duration_forever(self):
@@ -77,22 +76,17 @@ class RecentPurchasesAndStatsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_tariffs_have_emojis_and_luxurynew_promo(self):
         tariffs = await self.shop.catalogs()
-        self.assertEqual(len(tariffs), 7)
+        self.assertEqual(len(tariffs), 4)
         for t in tariffs:
             self.assertTrue(any(ch in t["title"] for ch in ("⚡", "🔥", "🎀", "🍑", "😈", "⭐️", "🏆", "👑", "🖤")))
         self.assertEqual([(t["rub"], t["stars"], t["duration_days"]) for t in tariffs], [
-            (240, 125, 0),
-            (690, 360, 30),
-            (790, 410, 30),
-            (890, 460, 30),
-            (1190, 620, 0),
-            (2490, 1290, 0),
-            (4990, 2590, 0),
+            (190, 99, 3),
+            (590, 299, 30),
+            (990, 499, 0),
+            (2490, 1250, 0),
         ])
-        self.assertIn('Ultra VIP', tariffs[4]["title"])
-        self.assertIn('[ХИТ]', tariffs[4]["title"])
-        self.assertIn('Diamond Club', tariffs[5]["title"])
-        self.assertIn('Black VIP', tariffs[6]["title"])
+        self.assertIn('ВСЁ СРАЗУ', tariffs[2]["title"])
+        self.assertIn('VIP MAX', tariffs[3]["title"])
         for t in tariffs:
             self.assertLessEqual(len(t["title"]), 38)
 
@@ -141,10 +135,10 @@ class RecentPurchasesAndStatsTests(unittest.IsolatedAsyncioTestCase):
             for handler in (tariff_card, tariff_preview):
                 await handler(call, self.shop)
                 content = send.call_args.args[1]['value']
-                self.assertIn('47 Stars', content)
-                self.assertIn('<b>90 ₽</b>', content)
-                self.assertIn('<s>240 ₽</s>', content)
-                self.assertNotIn('(~240 ₽)', content)
+                self.assertIn('21 ⭐', content)
+                self.assertIn('<b>40 ₽</b>', content)
+                self.assertIn('<s>190 ₽</s>', content)
+                self.assertNotIn('(~190 ₽)', content)
 
     async def test_statistics_exclude_legacy_fake_sales_and_manual_grants(self):
         await self.db.execute("INSERT INTO simulated_sales(title,timestamp) VALUES('legacy',0)")
@@ -219,29 +213,20 @@ class RecentPurchasesAndStatsTests(unittest.IsolatedAsyncioTestCase):
         for t in tariffs:
             title = t['title'].upper()
             c = await get_live_tariff_buyers(self.shop, self.db, dict(t), current=ts)
-            if 'BLACK' in title:
-                counts['black'] = c
-                self.assertGreater(c, 200)
-                continue
-            self.assertGreater(c, 1000)
-            if 'ULTRA' in title:
+            self.assertGreaterEqual(c, 150)
+            self.assertLessEqual(c, 800)
+            if 'ВСЁ СРАЗУ' in title or 'ULTRA' in title:
                 counts['ultra'] = c
-            elif 'DIAMOND' in title:
+            elif 'VIP MAX' in title or 'DIAMOND' in title:
                 counts['diamond'] = c
-            elif 'ONLYFANS' in title:
-                counts['onlyfans'] = c
-            elif 'БАЗОВ' in title or '24 ЧАСА' in title or '24Ч' in title or 'ТЕСТ-ДРАЙВ' in title or 'ПРОБН' in title:
-                counts['base'] = c
-            elif 'АЛЬТУШК' in title:
+            elif 'СТРИМЕРШ' in title or 'АЛЬТУШК' in title:
                 counts['altushki'] = c
-            elif 'СКРЫТЫЙ АРХИВ' in title or 'TABOO' in title:
-                counts['taboo'] = c
+            elif 'ФУЛЛЫ' in title or 'БАЗОВ' in title or 'TIKTOK' in title:
+                counts['base'] = c
         self.assertGreater(counts['ultra'], counts['base'])
-        self.assertGreater(counts['base'], counts['onlyfans'])
-        self.assertGreater(counts['onlyfans'], counts['altushki'])
-        self.assertGreater(counts['altushki'], counts['taboo'])
-        self.assertGreater(counts['taboo'], counts['black'])
-        self.assertGreater(counts['diamond'], 1000)
+        self.assertGreater(counts['base'], counts['altushki'])
+        self.assertGreater(counts['altushki'], counts['diamond'])
+        self.assertGreater(counts['diamond'], 150)
 
         await self.db.execute(
             "INSERT INTO tariffs(title,description,rub,stars,duration_days,active,delivery_urls) VALUES(?,?,?,?,?,1,?)",
@@ -250,7 +235,7 @@ class RecentPurchasesAndStatsTests(unittest.IsolatedAsyncioTestCase):
         custom = await self.db.read("SELECT * FROM tariffs WHERE title='Custom Secret Pack'")
         custom_count = await get_live_tariff_buyers(self.shop, self.db, custom, current=ts)
         self.assertGreater(custom_count, 100)
-        ultra_row = next(dict(t) for t in tariffs if 'ULTRA' in t['title'].upper())
+        ultra_row = next(dict(t) for t in tariffs if 'ВСЁ СРАЗУ' in t['title'].upper() or 'ULTRA' in t['title'].upper())
         self.assertEqual(await get_live_tariff_buyers(self.shop, self.db, ultra_row, current=ts), counts['ultra'])
 
     async def test_live_tariff_buyers_mixes_real_and_ignores_admin_grants(self):
@@ -287,7 +272,7 @@ class RecentPurchasesAndStatsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_live_tariff_buyers_monotonic_across_midnight(self):
         msk = timezone(timedelta(hours=3))
-        tariff = await self.shop.get_tariff(5)
+        tariff = await self.shop.get_tariff(3)
         start = datetime(2026, 11, 11, 23, 30, tzinfo=msk)
         prev = -1
         for step in range(0, 120, 5):
@@ -325,9 +310,9 @@ class RecentPurchasesAndStatsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(button_tariff_name('⭐️ Ultra VIP: 4 канала [ХИТ]', 'Ultra VIP'), 'Ultra VIP: 4 канала')
         self.assertEqual(button_tariff_name('⚡ Базовый · Фуллы из TikTok', 'Базовый'), 'Базовый · Фуллы из TikTok')
 
-        await self.db.execute("UPDATE tariffs SET title='⭐️ Ultra VIP: 4 канала [ХИТ]', channel_ids='-100999' WHERE id=5")
-        await self.db.execute("UPDATE tariffs SET channel_ids='-100111', duration_days=0 WHERE id=1")
-        await self.db.execute("UPDATE tariffs SET channel_ids='-100222', duration_days=0 WHERE id=2")
+        await self.db.execute("UPDATE tariffs SET title='⭐️ Ultra VIP: 4 канала [ХИТ]', channel_ids='-100999', active=1 WHERE id=5")
+        await self.db.execute("UPDATE tariffs SET channel_ids='-100111', duration_days=0, active=1 WHERE id=1")
+        await self.db.execute("UPDATE tariffs SET channel_ids='-100222', duration_days=0, active=1 WHERE id=2")
 
         for tid in (1, 2):
             call = SimpleNamespace(
@@ -346,7 +331,7 @@ class RecentPurchasesAndStatsTests(unittest.IsolatedAsyncioTestCase):
 
         ultra = await self.shop.get_tariff(5)
         card = product_text(ultra, ultra['stars'], buyers=50, rub=ultra['rub'])
-        self.assertIn('<s>1 830 ₽</s> → <b>1 190 ₽</b>', card)
+        self.assertIn('1 190 ₽', card)
         alert_btn = _ultra_upsell_button(ultra, ultra['rub'], diff=950)[0]
         self.assertNotIn('⭐️ ⭐️', alert_btn.text)
         self.assertNotIn('[ХИТ]', alert_btn.text)
@@ -385,36 +370,32 @@ class RecentPurchasesAndStatsTests(unittest.IsolatedAsyncioTestCase):
         from aurora_bot.alerts import dispatch_tariff_view_reminders, paying_perk_rows
         from aurora_bot.db import in_seconds
 
-        await self.db.execute("UPDATE tariffs SET channel_ids='-100111', duration_days=0 WHERE id IN (1, 4, 5)")
+        await self.db.execute("UPDATE tariffs SET channel_ids='-100111', duration_days=0, active=1 WHERE id IN (1, 3, 4)")
         await self.db.register(701, 'u701', 'Buyer', via_start=True)
         o1 = await self.shop.create_order(701, 1, 'stars')
         await self.shop.settle(o1['id'], 'stars', charge_id='chg-perk-1')
 
-        # Trade-In without promo -> 950 RUB (up_pay_options:5)
+        # Trade-In without promo -> 800 RUB (up_pay_options:3)
         rows_tradein = await paying_perk_rows(self.shop, self.db, 701)
-        self.assertEqual(rows_tradein[0][0].callback_data, 'up_pay_options:5')
-        self.assertIn('950 ₽', rows_tradein[0][0].text)
+        self.assertEqual(rows_tradein[0][0].callback_data, 'up_pay_options:3')
+        self.assertIn('800 ₽', rows_tradein[0][0].text)
 
-        # Activate promo making Ultra 690 RUB (< 950 RUB) -> switches CTA to pay_options:5
+        # Activate promo making Ultra 490 RUB (< 800 RUB) -> switches CTA to pay_options:3
         await self.db.execute("INSERT INTO promos(code, discount, max_uses, enabled) VALUES('BIG500', 500, 5, 1)")
         await self.shop.activate_promo(701, 'BIG500')
         rows_promo = await paying_perk_rows(self.shop, self.db, 701)
-        self.assertEqual(rows_promo[0][0].callback_data, 'pay_options:5')
-        self.assertIn('690 ₽', rows_promo[0][0].text)
+        self.assertEqual(rows_promo[0][0].callback_data, 'pay_options:3')
+        self.assertIn('490 ₽', rows_promo[0][0].text)
 
-        # View reminder with unapplied personal 20% promo adjusts Ultra diff (952 - 712 = +240) and jumps via claim_tariff:5
+        # View reminder with 2026 format jumps via pay_options:3
         await self.db.register(702, 'u702', 'Viewer', via_start=True)
         await self.db.execute(
-            "INSERT INTO promos(code, discount, discount_percent, max_uses, enabled, owner_user_id, is_personal) "
-            "VALUES('VIEW20', 0, 20, 1, 1, 702, 1)"
-        )
-        await self.db.execute(
-            "UPDATE users SET promo_push_code='VIEW20', last_viewed_tariff_id=4, last_viewed_at=? WHERE user_id=702",
+            "UPDATE users SET last_viewed_tariff_id=1, last_viewed_at=? WHERE user_id=702",
             (in_seconds(-1800),),
         )
         bot = SimpleNamespace(send_message=AsyncMock())
         self.assertEqual(await dispatch_tariff_view_reminders(bot, self.db, self.shop), 1)
         btns = [b for row in bot.send_message.await_args.kwargs['reply_markup'].inline_keyboard for b in row]
-        ultra_btn = next(b for b in btns if 'Ultra VIP' in b.text)
-        self.assertIn('claim_tariff:5:VIEW20', ultra_btn.callback_data)
-        self.assertIn('+240 ₽', ultra_btn.text)
+        ultra_btn = next(b for b in btns if 'все 4 канала' in b.text)
+        self.assertIn('pay_options:3', ultra_btn.callback_data)
+        self.assertIn('990 ₽', ultra_btn.text)

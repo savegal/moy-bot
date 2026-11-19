@@ -257,7 +257,7 @@ class AuditFixRegressionTests(unittest.IsolatedAsyncioTestCase):
     async def test_crypto_upgrade_works_with_hidden_contacts_and_cards_are_disabled(self):
         paid = await self.shop.create_order(101, 1, 'stars')
         await self.shop.settle_stars(paid['id'], 101, paid['amount_stars'], 'chg-up-sup')
-        await self.db.execute("UPDATE tariffs SET channel_ids='-100555' WHERE id=5")
+        await self.db.execute("UPDATE tariffs SET channel_ids='-100555', active=1 WHERE id=5")
         await self.db.set_setting('support_url', '')
         await self.db.set_setting('contacts_visible', '0')
 

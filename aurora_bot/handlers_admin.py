@@ -42,6 +42,13 @@ from .handlers_user import refunded_stars, successful_stars
 log = logging.getLogger(__name__)
 router = Router(name='administration')
 
+LUXURY_HUB_PROMO_TEXT = (
+    "📢 🎁 <b>Дарим скидку! 💜</b>\n\n"
+    "<code>{code}</code> - забирай промокод и наслаждайся 💜🎉😊\n"
+    "Промокод активен только сегодня ⏳{ttl_note}\n"
+    "Нажимай на кнопочку ниже 🔽"
+)
+
 
 class IsAdmin(Filter):
     async def __call__(self, event, config: Config) -> bool:
@@ -2876,10 +2883,15 @@ async def _render_promo_push_screen(target: Message | CallbackQuery, db: Databas
             f"Префикс: <code>{esc(prefix)}_XXXXXX</code> · Скидка: <b>{disc_label}</b> · Срок: <b>{ttl_label}</b>"
         )
 
+    media_row = await db.setting('promo_push_text')
+    has_media = bool(media_row and (media_row.get('media_id') or '').strip())
+    media_label = f"🟢 Есть ({media_row.get('media_type', 'photo')})" if has_media else "⚪ Нет"
+
     text = (
         f"<b>🎁 Авто-пуш промокодом (дожим некупивших)</b>\n\n"
         f"Статус: <b>{'🟢 Включён' if enabled else '⚪ Выключен'}</b>\n"
         f"{mode_block}\n"
+        f"Баннер (Luxury Hub): <b>{media_label}</b>\n"
         f"Таймер после /start: <b>{_fmt_delay_minutes(delay_min)}</b> (только если 0 покупок)\n"
         f"Отправлено пушей: <b>{sent_cnt}</b> · Купили с кодом: <b>{conv_cnt}</b> ({conv_pct})\n"
         f"Некупивших без пуша: <b>{stats['cold_cnt']}</b>"
@@ -2900,8 +2912,9 @@ async def _render_promo_push_screen(target: Message | CallbackQuery, db: Databas
         rows.append((cb(f"⏳ Срок: {ttl_hours} ч." if ttl_hours else '⏳ Срок: бессрочно', 'adm:ppush:edit:ttl'),))
     rows.extend((
         (cb(f'⏱ Таймер: {_fmt_delay_minutes(delay_min)}', 'adm:ppush:delaymenu'), cb('✏️ Текст пуша', 'adm:ppush:edit:text')),
-        (cb('🧪 Тест себе', 'adm:ppush:test'), cb('🚀 Разослать сейчас', 'adm:ppush:blast')),
-        (cb('🏠 Главное меню', 'adm:home'),),
+        (cb(f"🖼 Баннер ({'есть' if has_media else 'нет'})", 'adm:ppush:media'), cb('💜 Шаблон Luxury Hub', 'adm:ppush:tpl:luxury')),
+        (cb('🔄 Шаблон 2026', 'adm:ppush:tpl:2026'), cb('🧪 Тест себе', 'adm:ppush:test')),
+        (cb('🚀 Разослать сейчас', 'adm:ppush:blast'), cb('🏠 Главное меню', 'adm:home')),
     ))
     await screen(target, text, reply_markup=kb(*rows))
 
@@ -3068,12 +3081,59 @@ async def promo_push_edit_start(call: CallbackQuery, state: FSMContext, db: Data
     await screen(call, prompt, reply_markup=form_nav('◀️ Отменить', 'adm:ppush'))
 
 
+@router.callback_query(F.data == 'adm:ppush:tpl:luxury')
+async def promo_push_tpl_luxury(call: CallbackQuery, db: Database):
+    await db.set_setting('promo_push_text', LUXURY_HUB_PROMO_TEXT)
+    await db.audit(call.from_user.id, 'promo_push_setting', 'tpl=luxury_hub')
+    await call.answer('💜 Шаблон Luxury Hub установлен!', show_alert=True)
+    await _render_promo_push_screen(call, db)
+
+
+@router.callback_query(F.data == 'adm:ppush:tpl:2026')
+async def promo_push_tpl_2026(call: CallbackQuery, db: Database):
+    await db.set_setting('promo_push_text', DEFAULT_SETTINGS['promo_push_text'])
+    await db.audit(call.from_user.id, 'promo_push_setting', 'tpl=2026')
+    await call.answer('🔄 Шаблон 2026 установлен!', show_alert=True)
+    await _render_promo_push_screen(call, db)
+
+
+@router.callback_query(F.data == 'adm:ppush:media')
+async def promo_push_media_start(call: CallbackQuery, state: FSMContext, db: Database):
+    await state.set_state(AdminState.promo_push_field)
+    await state.update_data(ppush_field='media')
+    cur = await db.setting('promo_push_text')
+    has_m = bool(cur and (cur.get('media_id') or '').strip())
+    status = f"Текущий баннер: <b>{cur.get('media_type', 'photo')}</b>" if has_m else "Сейчас баннер не прикреплён."
+    prompt = (
+        f"<b>🖼 Баннер для пуша со скидкой (Luxury Hub стиль)</b>\n\n"
+        f"{status}\n\n"
+        "Отправьте фото, видео или GIF для баннера.\n"
+        "Чтобы убрать баннер и отправлять только текст, отправьте слово <code>удалить</code>."
+    )
+    await call.answer()
+    await screen(call, prompt, reply_markup=form_nav('◀️ Отменить', 'adm:ppush'))
+
+
 @router.message(AdminState.promo_push_field, ~F.text.startswith('/'))
 async def promo_push_edit_save(message: Message, state: FSMContext, db: Database):
     field = (await state.get_data()).get('ppush_field')
     raw = (message.text or '').strip()
     try:
-        if field == 'prefix':
+        if field == 'media':
+            if raw.lower() in ('удалить', 'delete', 'нет', 'none'):
+                await db.set_setting('promo_push_text', media_id='', media_type='')
+                await db.audit(message.from_user.id, 'promo_push_setting', 'media=deleted')
+            else:
+                extracted = _extract_media_upload(message)
+                if extracted is None:
+                    return await message.answer(
+                        '⚠️ Отправьте фото, видео, GIF или слово <code>удалить</code>.',
+                        reply_markup=form_nav('◀️ Отменить', 'adm:ppush'),
+                    )
+                mid, kind = extracted
+                await db.set_setting('promo_push_text', media_id=mid, media_type=kind)
+                await db.audit(message.from_user.id, 'promo_push_setting', f'media={kind}')
+        elif field == 'prefix':
             clean = raw.upper()
             if not re.fullmatch(r'[A-Z0-9_]{1,12}', clean):
                 raise ValueError('Используйте 1-12 символов A-Z, 0-9 или _.')
@@ -3117,7 +3177,14 @@ async def promo_push_test(call: CallbackQuery, db: Database):
     if not payload:
         return await call.answer('Выбранный промокод неактивен или исчерпан. Включите его или выберите другой.', show_alert=True)
     text, markup, _, _ = payload
-    if await safe_send_push_text(call.bot, call.from_user.id, text, markup):
+    media_row = await db.setting('promo_push_text')
+    mid = (media_row or {}).get('media_id') or ''
+    kind = (media_row or {}).get('media_type') or 'photo'
+    if mid:
+        sent = await safe_send_media(call.bot, call.from_user.id, mid, kind, text, markup)
+    else:
+        sent = await safe_send_push_text(call.bot, call.from_user.id, text, markup)
+    if sent:
         return await call.answer('Тестовый пуш отправлен.')
     await call.answer('Не удалось отправить ЛС клиенту (бот заблокирован или недоступен).', show_alert=True)
 

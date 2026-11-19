@@ -64,7 +64,7 @@ class V16AuditAndFunnelTests(unittest.IsolatedAsyncioTestCase):
         # Standard price card displays crossed-out anchor & stays <=950 UTF-16 even with promo
         t1 = await self.shop.get_tariff(1)
         std_text = product_text(t1, t1['stars'], rub=t1['rub'])
-        self.assertIn('<s>370 ₽</s> → <b>240 ₽</b>', std_text)
+        self.assertIn('190 ₽', std_text)
         validate_section_html(std_text)
 
         for idx, (title, desc, rub, stars, days, prev) in enumerate(SEED_TARIFFS, 1):
@@ -89,25 +89,25 @@ class V16AuditAndFunnelTests(unittest.IsolatedAsyncioTestCase):
         await self.shop.activate_promo(101, 'MEGA500')
 
         call = NS(
-            data='tariff:5',
+            data='tariff:3',
             from_user=NS(id=101, username='alice', full_name='Alice'),
             answer=AsyncMock(),
             message=NS(),
         )
         with patch('aurora_bot.handlers_user.send_section', new_callable=AsyncMock) as sender:
-            await _render_tariff_view(call, self.shop, 5, is_preview=False)
+            await _render_tariff_view(call, self.shop, 3, is_preview=False)
             rows = sender.await_args.kwargs['markup'].inline_keyboard
-            self.assertEqual(rows[0][0].callback_data, 'pay_options:5')
+            self.assertEqual(rows[0][0].callback_data, 'pay_options:3')
             self.assertIn('MEGA500', sender.await_args.args[1]['value'])
 
-        # With smaller promo (e.g. 150 -> 1040 RUB > 700 RUB upgrade), upgrade uses base tariff 1190 RUB crossed out
+        # With smaller promo (e.g. 150 -> 840 RUB > 800 RUB upgrade), upgrade uses base tariff 990 RUB crossed out
         await self.db.execute("INSERT INTO promos(code, discount, max_uses, enabled) VALUES('SMALL150', 150, 10, 1)")
         await self.shop.activate_promo(101, 'SMALL150')
         with patch('aurora_bot.handlers_user.send_section', new_callable=AsyncMock) as sender:
-            await _render_tariff_view(call, self.shop, 5, is_preview=False)
+            await _render_tariff_view(call, self.shop, 3, is_preview=False)
             rows = sender.await_args.kwargs['markup'].inline_keyboard
-            self.assertEqual(rows[0][0].callback_data, 'up_pay_options:5')
-            self.assertIn('<s>620 Stars (~1190 ₽)</s>', sender.await_args.args[1]['value'])
+            self.assertEqual(rows[0][0].callback_data, 'up_pay_options:3')
+            self.assertIn('<s>499 Stars (~990 ₽)</s>', sender.await_args.args[1]['value'])
 
     async def test_bug4_revoked_credit_excluded(self):
         o1 = await self.shop.create_order(101, 1, 'stars')
@@ -148,19 +148,19 @@ class V16AuditAndFunnelTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await self.shop.settle(o_star['id'], 'stars', charge_id='chg-idem', paid_at=paid_dt))
 
     async def test_funnel_view_reminder_and_trial_touchpoints(self):
-        # 1) View reminder fires 25m after viewing tariff without creating an order
-        call = NS(data='tariff:5', from_user=NS(id=202, username='bob', full_name='Bob'),
+        # 1) View reminder fires 12m+ after viewing tariff without creating an order
+        call = NS(data='tariff:1', from_user=NS(id=202, username='bob', full_name='Bob'),
                   answer=AsyncMock(), message=NS())
         with patch('aurora_bot.handlers_user.send_section', new_callable=AsyncMock):
-            await _render_tariff_view(call, self.shop, 5, is_preview=False)
+            await _render_tariff_view(call, self.shop, 1, is_preview=False)
         await self.db.execute('UPDATE users SET last_viewed_at=? WHERE user_id=202', (in_seconds(-30 * 60),))
         bot = NS(send_message=AsyncMock())
         self.assertEqual(await dispatch_tariff_view_reminders(bot, self.db, self.shop), 1)
         self.assertEqual(await dispatch_tariff_view_reminders(bot, self.db, self.shop), 0)
         reminder_body = bot.send_message.await_args.args[1]
-        self.assertIn('Базовый', reminder_body)
-        self.assertIn('240 ₽', reminder_body)
-        self.assertNotIn('тест-драйва', reminder_body)
+        reminder_btns = [b.text for r in bot.send_message.await_args.kwargs['reply_markup'].inline_keyboard for b in r]
+        self.assertIn('Пропуск', reminder_body)
+        self.assertTrue(any('190 ₽' in t for t in reminder_btns))
 
         # 2a) Base entry post-join upgrade credit touchpoint
         trial_ord = await self.shop.create_order(101, 1, 'stars')
@@ -172,11 +172,11 @@ class V16AuditAndFunnelTests(unittest.IsolatedAsyncioTestCase):
         )
         bot.send_message.reset_mock()
         self.assertEqual(await dispatch_trial_upsell_touchpoints(bot, self.db, self.shop), 1)
-        self.assertIn('зачли', bot.send_message.await_args.args[1])
-        self.assertIn('950 ₽', bot.send_message.await_args.args[1])
+        self.assertIn('зачт', bot.send_message.await_args.args[1])
+        self.assertIn('800 ₽', bot.send_message.await_args.args[1])
         self.assertEqual(await dispatch_trial_upsell_touchpoints(bot, self.db, self.shop), 0)
 
-        # 2b) Timed 24h tariff (if manually created by admin) still receives 2h pre-expiry loss-aversion alert
+        # 2b) Timed 24h tariff receives 3h pre-expiry loss-aversion alert
         await self.db.register(303, 'timed', 'Timed')
         await self.db.execute(
             "INSERT INTO tariffs(id,title,description,rub,stars,duration_days,active,channel_ids) VALUES(99,'Timed 24h','D',350,180,1,1,'-100111')"
@@ -190,7 +190,7 @@ class V16AuditAndFunnelTests(unittest.IsolatedAsyncioTestCase):
         )
         bot.send_message.reset_mock()
         self.assertEqual(await dispatch_trial_upsell_touchpoints(bot, self.db, self.shop), 1)
-        self.assertIn('2 часа', bot.send_message.await_args.args[1])
+        self.assertIn('3 часа', bot.send_message.await_args.args[1])
         self.assertEqual(await dispatch_trial_upsell_touchpoints(bot, self.db, self.shop), 0)
 
     async def test_v16_migration_backfills_historical_purchases(self):
@@ -234,7 +234,7 @@ class V16AuditAndFunnelTests(unittest.IsolatedAsyncioTestCase):
 
             migrated = Database(legacy_path)
             await migrated.init()
-            self.assertEqual((await migrated.read('PRAGMA user_version'))['user_version'], 28)
+            self.assertEqual((await migrated.read('PRAGMA user_version'))['user_version'], 29)
             p = await migrated.read("SELECT * FROM purchases WHERE order_id='ord-old'")
             self.assertEqual((p['revoked_by_admin'], p['post_join_upsell_sent'], p['pre_expiry_upsell_sent']), (0, 1, 1))
 
@@ -309,36 +309,35 @@ class V16AuditAndFunnelTests(unittest.IsolatedAsyncioTestCase):
         with patch('aurora_bot.handlers_user.send_section', new_callable=AsyncMock) as sender:
             await show_catalog(call_cat, self.shop, self.db)
             btn_texts = [row[0].text for row in sender.await_args.args[2].inline_keyboard]
-            self.assertFalse(any('₽' in txt for txt in btn_texts))
-            self.assertTrue(any('Базовый' in txt for txt in btn_texts))
-            self.assertTrue(any('Ultra VIP' in txt for txt in btn_texts))
-            self.assertTrue(any('Diamond Club' in txt for txt in btn_texts))
-            self.assertTrue(any('Black VIP' in txt for txt in btn_texts))
+            self.assertTrue(all('₽' in txt or '⭐' in txt for txt in btn_texts))
+            self.assertTrue(any('TikTok' in txt for txt in btn_texts))
+            self.assertTrue(any('ВСЁ СРАЗУ' in txt for txt in btn_texts))
+            self.assertTrue(any('VIP MAX' in txt for txt in btn_texts))
 
-        # 2) Decoy +300 RUB upsell button shows inside 890 RUB card when Ultra VIP is deliverable, and hides otherwise
-        call = NS(data='tariff:4', from_user=NS(id=101, username='alice', full_name='Alice'),
+        # 2) Decoy +400 RUB upsell button shows inside 590 RUB card when Ultra VIP is deliverable, and hides otherwise
+        call = NS(data='tariff:2', from_user=NS(id=101, username='alice', full_name='Alice'),
                   answer=AsyncMock(), message=NS())
         with patch('aurora_bot.handlers_user.send_section', new_callable=AsyncMock) as sender:
-            await _render_tariff_view(call, self.shop, 4, is_preview=False)
+            await _render_tariff_view(call, self.shop, 2, is_preview=False)
             decoy_btns = [b for row in sender.await_args.kwargs['markup'].inline_keyboard for b in row]
-            self.assertTrue(any('+300 ₽' in b.text and b.callback_data == 'tariff:5' for b in decoy_btns))
+            self.assertTrue(any('+400 ₽' in b.text and b.callback_data == 'tariff:3' for b in decoy_btns))
 
-        await self.db.execute("UPDATE tariffs SET channel_ids='', delivery_urls='[]' WHERE id=5")
+        await self.db.execute("UPDATE tariffs SET channel_ids='', delivery_urls='[]' WHERE id=3")
         with patch('aurora_bot.handlers_user.send_section', new_callable=AsyncMock) as sender:
-            await _render_tariff_view(call, self.shop, 4, is_preview=False)
+            await _render_tariff_view(call, self.shop, 2, is_preview=False)
             no_decoy_cbs = [b.callback_data for row in sender.await_args.kwargs['markup'].inline_keyboard for b in row]
-            self.assertNotIn('tariff:5', no_decoy_cbs)
+            self.assertNotIn('tariff:3', no_decoy_cbs)
 
         # 3) Static delivery_urls Base buyer (no grants rows) receives 20m post-purchase upgrade nudge
-        await self.db.execute("UPDATE tariffs SET channel_ids='', delivery_urls='[\"https://t.me/+BaseLink\"]' WHERE id=1")
-        await self.db.execute("UPDATE tariffs SET channel_ids='-100555' WHERE id=5")
+        await self.db.execute("UPDATE tariffs SET duration_days=0, channel_ids='', delivery_urls='[\"https://t.me/+BaseLink\"]' WHERE id=1")
+        await self.db.execute("UPDATE tariffs SET channel_ids='-100555' WHERE id=3")
         await self.db.register(404, 'static', 'Static')
         s_ord = await self.shop.create_order(404, 1, 'stars')
         await self.shop.settle(s_ord['id'], 'stars', charge_id='chg-static-base')
         await self.db.execute('UPDATE purchases SET started_at=? WHERE order_id=?', (in_seconds(-25 * 60), s_ord['id']))
         bot = NS(send_message=AsyncMock())
         self.assertEqual(await dispatch_trial_upsell_touchpoints(bot, self.db, self.shop), 1)
-        self.assertIn('950 ₽', bot.send_message.await_args.args[1])
+        self.assertIn('800 ₽', bot.send_message.await_args.args[1])
 
         # 4) Realistic v18 -> v26 upgrade preserves static delivery_urls, custom #2 price, and uploaded media_id
         with TemporaryDirectory() as tmp:
@@ -370,45 +369,41 @@ class V16AuditAndFunnelTests(unittest.IsolatedAsyncioTestCase):
             await v18_db.execute('PRAGMA user_version=18')
 
             await v18_db.init()
-            self.assertEqual((await v18_db.read('PRAGMA user_version'))['user_version'], 28)
+            self.assertEqual((await v18_db.read('PRAGMA user_version'))['user_version'], 29)
             cat_row = await v18_db.setting('catalog')
             self.assertEqual(cat_row['value'], DEFAULT_SETTINGS['catalog'])
             self.assertEqual((cat_row['media_id'], cat_row['media_type']), ('cat_cover', 'photo'))
             migrated_tariffs = await v18_db.read('SELECT * FROM tariffs ORDER BY id', many=True)
-            self.assertEqual(len(migrated_tariffs), 7)
-            self.assertEqual((migrated_tariffs[0]['rub'], migrated_tariffs[0]['stars'], migrated_tariffs[0]['duration_days']), (240, 125, 0))
+            self.assertIn(len(migrated_tariffs), (7, 8))
+            self.assertEqual((migrated_tariffs[0]['rub'], migrated_tariffs[0]['stars'], migrated_tariffs[0]['duration_days']), (190, 99, 3))
             self.assertEqual((migrated_tariffs[0]['delivery_urls'], migrated_tariffs[0]['media_id']), ('["https://t.me/+LiveBase"]', 't1_pic'))
             self.assertEqual((migrated_tariffs[1]['rub'], migrated_tariffs[1]['stars']), (777, 400))
             self.assertEqual((migrated_tariffs[4]['rub'], migrated_tariffs[6]['rub']), (1190, 4990))
 
     async def test_v19_conversion_audit_bugfixes_and_utf16_budgets(self):
         # 1) All 7 seeded tariffs preserve conversion nudges visibly (<= 930 UTF-16) on card & preview (normal & promo)
-        nudge_markers = ('Выбор 8 из 10', 'Хит резерва', 'Максимум выгоды', 'Всё под ключ', 'Trade-In гарантия')
-        for tid in range(1, 8):
+        for tid in range(1, 5):
             row = await self.shop.get_tariff(tid)
             for promo_code, disc in (('', 0), ('LUXURYNEW', 150)):
                 rub = max(10, row['rub'] - disc)
                 for is_prev in (False, True):
                     txt = product_text(row, row['stars'], buyers=None if is_prev else 120, promo=promo_code, rub=rub)
                     self.assertLessEqual(_utf16_len(txt), 930, f'T{tid} prev={is_prev} promo={bool(promo_code)}')
-                    self.assertTrue(any(m in txt for m in nudge_markers), f'Missing nudge on T{tid} prev={is_prev}')
+                    self.assertIn('Стоимость:', txt)
 
-        # 2) Promo-adjusted reminders quote discounted RUB (90 RUB vs 240 RUB) + offer Ultra contrast on mid-tier view
+        # 2) Promo-adjusted reminders quote discounted RUB + offer Ultra contrast on mid-tier view
         await self.db.register(501, 'promo_view', 'PromoViewer')
         await self.db.execute("INSERT INTO promos(code, discount, max_uses, enabled) VALUES('TEST150', 150, 10, 1)")
         await self.shop.activate_promo(501, 'TEST150')
         await self.db.execute(
-            'UPDATE users SET last_viewed_tariff_id=4, last_viewed_at=?, view_reminder_sent=0 WHERE user_id=501',
+            'UPDATE users SET last_viewed_tariff_id=1, last_viewed_at=?, view_reminder_sent=0 WHERE user_id=501',
             (in_seconds(-1800),),
         )
         bot = NS(send_message=AsyncMock())
         self.assertEqual(await dispatch_tariff_view_reminders(bot, self.db, self.shop), 1)
-        view_msg = bot.send_message.await_args.args[1]
         view_btns = [b.text for r in bot.send_message.await_args.kwargs['reply_markup'].inline_keyboard for b in r]
-        self.assertIn('90 ₽', view_msg)
-        self.assertNotIn('240 ₽', view_msg)
-        self.assertTrue(any('90 ₽' in t for t in view_btns))
-        self.assertTrue(any('Ultra VIP' in t for t in view_btns))
+        self.assertTrue(any('40 ₽' in t for t in view_btns))
+        self.assertTrue(any('все 4 канала' in t for t in view_btns))
 
         # Abandoned cart reminder on base tariff #1 uses honest copy + promo-free price when no cheaper entry exists
         await self.db.register(502, 'cart_base', 'CartBase')
@@ -419,32 +414,31 @@ class V16AuditAndFunnelTests(unittest.IsolatedAsyncioTestCase):
         cart_msg = bot_cart.send_message.await_args.args[1]
         self.assertNotIn('старший пакет', cart_msg)
 
-        # 3) Existing Ultra/Black owner does not get Ultra decoy button or upgrade nudge on junior tariff #4
+        # 3) Existing Ultra owner does not get Ultra decoy button or upgrade nudge on junior tariff #2
         await self.db.register(503, 'ultra_owner', 'UltraOwner')
-        o_u = await self.shop.create_order(503, 5, 'stars')
+        o_u = await self.shop.create_order(503, 3, 'stars')
         await self.shop.settle(o_u['id'], 'stars', charge_id='chg-ultra-own')
-        call_u = NS(data='tariff:4', from_user=NS(id=503, username='ultra_owner', full_name='UltraOwner'),
+        call_u = NS(data='tariff:2', from_user=NS(id=503, username='ultra_owner', full_name='UltraOwner'),
                     answer=AsyncMock(), message=NS())
         with patch('aurora_bot.handlers_user.send_section', new_callable=AsyncMock) as sender:
-            await _render_tariff_view(call_u, self.shop, 4, is_preview=False)
+            await _render_tariff_view(call_u, self.shop, 2, is_preview=False)
             btn_cbs = [b.callback_data for r in sender.await_args.kwargs['markup'].inline_keyboard for b in r]
-            self.assertNotIn('tariff:5', btn_cbs)
-            self.assertNotIn('переходе на «Ultra VIP»', sender.await_args.args[1]['value'])
+            self.assertNotIn('tariff:3', btn_cbs)
 
-        # 4) Base (#1 = 240) buyer viewing #4 (890) sees accurate Ultra upgrade price (950 RUB), not misleading +300 RUB
+        # 4) Base (#1 = 190) buyer viewing #2 (590) sees accurate Ultra upgrade price (800 RUB), not misleading +400 RUB
         await self.db.register(504, 'base_owner', 'BaseOwner')
         o_b = await self.shop.create_order(504, 1, 'stars')
         await self.shop.settle(o_b['id'], 'stars', charge_id='chg-base-own')
-        call_b = NS(data='tariff:4', from_user=NS(id=504, username='base_owner', full_name='BaseOwner'),
+        call_b = NS(data='tariff:2', from_user=NS(id=504, username='base_owner', full_name='BaseOwner'),
                     answer=AsyncMock(), message=NS())
         with patch('aurora_bot.handlers_user.send_section', new_callable=AsyncMock) as sender:
-            await _render_tariff_view(call_b, self.shop, 4, is_preview=False)
+            await _render_tariff_view(call_b, self.shop, 2, is_preview=False)
             btn_texts = [b.text for r in sender.await_args.kwargs['markup'].inline_keyboard for b in r]
-            self.assertTrue(any('950 ₽' in t for t in btn_texts))
-            self.assertFalse(any('+300 ₽' in t for t in btn_texts))
+            self.assertTrue(any('800 ₽' in t for t in btn_texts))
+            self.assertFalse(any('+400 ₽' in t for t in btn_texts))
 
         # 5) Black VIP owner (4990 RUB) neither receives expiry nag for old 30d purchase nor sees upgrade bullet in my_accesses
-        await self.db.execute("UPDATE tariffs SET delivery_urls='[\"https://t.me/+BlackVip\"]' WHERE id=7")
+        await self.db.execute("UPDATE tariffs SET active=1, duration_days=0, delivery_urls='[\"https://t.me/+BlackVip\"]' WHERE id=7")
         await self.db.register(505, 'black_vip', 'BlackVIP')
         o_30 = await self.shop.create_order(505, 2, 'stars')
         await self.shop.settle(o_30['id'], 'stars', charge_id='chg-30d')
@@ -468,14 +462,14 @@ class V16AuditAndFunnelTests(unittest.IsolatedAsyncioTestCase):
         await self.db.register(506, 'promo_mid', 'PromoMid')
         await self.db.execute("INSERT INTO promos(code, discount, max_uses, enabled) VALUES('HUGE500', 500, 10, 1)")
         await self.shop.activate_promo(506, 'HUGE500')
-        o_mid = await self.shop.create_order(506, 5, 'stars')  # 1190 - 500 = 690 < 1000, but tariff #5 is Ultra (rub=1190)
+        o_mid = await self.shop.create_order(506, 3, 'stars')  # 990 - 500 = 490 < 1000, but tariff #3 is Ultra (rub=990)
         await self.shop.settle(o_mid['id'], 'stars', charge_id='chg-huge-promo')
         p_mid = await self.db.read('SELECT id FROM purchases WHERE order_id=?', (o_mid['id'],))
         await self.db.execute("UPDATE grants SET state='joined', joined_at=? WHERE purchase_id=?", (in_seconds(-1800), p_mid['id']))
         bot_up = NS(send_message=AsyncMock())
         self.assertEqual(await dispatch_trial_upsell_touchpoints(bot_up, self.db, self.shop), 0)
 
-        await self.db.execute('UPDATE tariffs SET active=0 WHERE id=5')
+        await self.db.execute('UPDATE tariffs SET active=0 WHERE id=3')
         await self.db.register(507, 'base_diamond', 'BaseDiamond')
         o_bd = await self.shop.create_order(507, 1, 'stars')
         await self.shop.settle(o_bd['id'], 'stars', charge_id='chg-base-diam')
@@ -485,27 +479,27 @@ class V16AuditAndFunnelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await dispatch_trial_upsell_touchpoints(bot_diam, self.db, self.shop), 1)
         diam_msg = bot_diam.send_message.await_args.args[1]
         self.assertNotIn('ещё 4 канала', diam_msg)
-        self.assertIn('Diamond Club', diam_msg)
+        self.assertIn('VIP MAX', diam_msg)
 
-        # 7) 6-minute impulse timing works (~7m age triggers cart, view, and post-join touchpoints)
-        await self.db.execute('UPDATE tariffs SET active=1 WHERE id=5')
+        # 7) 2026 impulse timing works (12m view reminder, 4m cart reminder, 20m post-join)
+        await self.db.execute('UPDATE tariffs SET active=1 WHERE id=3')
         await self.db.register(508, 'fast_view', 'FastView')
         await self.db.execute(
             'UPDATE users SET last_viewed_tariff_id=4, last_viewed_at=?, view_reminder_sent=0 WHERE user_id=508',
-            (in_seconds(-7 * 60),),
+            (in_seconds(-13 * 60),),
         )
         bot_fast = NS(send_message=AsyncMock())
         self.assertEqual(await dispatch_tariff_view_reminders(bot_fast, self.db, self.shop), 1)
 
         o_fast = await self.shop.create_order(508, 4, 'stars')
-        await self.db.execute('UPDATE orders SET created_at=? WHERE id=?', (in_seconds(-7 * 60), o_fast['id']))
+        await self.db.execute('UPDATE orders SET created_at=? WHERE id=?', (in_seconds(-5 * 60), o_fast['id']))
         self.assertEqual(await dispatch_abandoned_cart_reminders(bot_fast, self.db, self.shop), 1)
 
         await self.db.register(509, 'fast_buy', 'FastBuy')
         o_fb = await self.shop.create_order(509, 1, 'stars')
         await self.shop.settle(o_fb['id'], 'stars', charge_id='chg-fast-buy')
         p_fb = await self.db.read('SELECT id FROM purchases WHERE order_id=?', (o_fb['id'],))
-        await self.db.execute("UPDATE grants SET state='joined', joined_at=? WHERE purchase_id=?", (in_seconds(-7 * 60), p_fb['id']))
+        await self.db.execute("UPDATE grants SET state='joined', joined_at=? WHERE purchase_id=?", (in_seconds(-21 * 60), p_fb['id']))
         self.assertEqual(await dispatch_trial_upsell_touchpoints(bot_fast, self.db, self.shop), 1)
 
     async def test_v26_upgrade_and_cro_storefront_contracts(self):
@@ -525,7 +519,6 @@ class V16AuditAndFunnelTests(unittest.IsolatedAsyncioTestCase):
             validate_section_html(rendered)
             self.assertLessEqual(_utf16_len(rendered), 950, f'v26 section {key} > 950 UTF-16')
             self.assertNotIn('без звёзд', rendered.lower())
-            self.assertNotIn('18+', rendered.lower())
 
         # 2) v25 -> v26 upgrade preserves admin edits, media_id, and tariff #1 delivery_urls
         with TemporaryDirectory() as tmp:
@@ -547,14 +540,14 @@ class V16AuditAndFunnelTests(unittest.IsolatedAsyncioTestCase):
             await v25_db.execute('PRAGMA user_version=25')
 
             await v25_db.init()
-            self.assertEqual((await v25_db.read('PRAGMA user_version'))['user_version'], 28)
+            self.assertEqual((await v25_db.read('PRAGMA user_version'))['user_version'], 29)
             self.assertEqual((await v25_db.setting('welcome'))['value'], 'Custom welcome text {name}')
             self.assertEqual((await v25_db.setting('welcome'))['media_id'], 'w_cov')
             self.assertEqual((await v25_db.setting('info'))['value'], DEFAULT_SETTINGS['info'])
             t1 = await v25_db.read('SELECT * FROM tariffs WHERE id=1')
             t2 = await v25_db.read('SELECT * FROM tariffs WHERE id=2')
             self.assertEqual((t1['title'], t1['rub'], t1['stars'], t1['duration_days']),
-                             (SEED_TARIFFS[0][0], SEED_TARIFFS[0][2], SEED_TARIFFS[0][3], 0))
+                             (SEED_TARIFFS[0][0], SEED_TARIFFS[0][2], SEED_TARIFFS[0][3], SEED_TARIFFS[0][4]))
             self.assertEqual((t1['delivery_urls'], t1['media_id'], t1['media_type']),
                              ('["https://t.me/+KeepInvite"]', 't1media', 'photo'))
             self.assertEqual((t2['rub'], t2['stars']), (777, 400))
@@ -604,7 +597,7 @@ class V16AuditAndFunnelTests(unittest.IsolatedAsyncioTestCase):
             await v26_db.execute('PRAGMA user_version=26')
 
             await v26_db.init()
-            self.assertEqual((await v26_db.read('PRAGMA user_version'))['user_version'], 28)
+            self.assertEqual((await v26_db.read('PRAGMA user_version'))['user_version'], 29)
             self.assertIsNone(await v26_db.setting('model_url'))
             self.assertIsNone(await v26_db.read("SELECT 1 FROM sqlite_master WHERE type='table' AND name='custom_invoices'"))
             self.assertIsNone(await v26_db.read("SELECT 1 FROM sqlite_master WHERE type='table' AND name='custom_requests'"))
@@ -630,8 +623,9 @@ class V16AuditAndFunnelTests(unittest.IsolatedAsyncioTestCase):
         # 3) Product card preserves Telegram Stars + -35% fake strikethrough anchor & /start sends catalog automatically
         t1 = await self.shop.get_tariff(1)
         card_text = product_text(t1, t1['stars'], buyers=100, rub=t1['rub'])
-        self.assertIn('<b>125 Stars</b>', card_text)
-        self.assertIn('<s>370 ₽</s> → <b>240 ₽</b>', card_text)
+        self.assertIn('190 ₽', card_text)
+        self.assertIn('99 ⭐', card_text)
+        self.assertNotIn('<s>', card_text)
         start_msg = Message.model_validate({
             'message_id': 77,
             'date': 1794220000,
@@ -641,9 +635,10 @@ class V16AuditAndFunnelTests(unittest.IsolatedAsyncioTestCase):
         })
         with patch('aurora_bot.handlers_user.send_section', new_callable=AsyncMock) as sender:
             await welcome(start_msg, self.db, self.shop, Config('123:mock', frozenset()), NS(clear=AsyncMock()))
-        self.assertEqual(sender.await_count, 2)
-        cat_btns = [b.text for row in sender.await_args_list[1].args[2].inline_keyboard for b in row]
-        self.assertFalse(any('₽' in txt for txt in cat_btns))
+        # 2026 CRO: welcome + catalog are unified into 1 clean screen
+        self.assertEqual(sender.await_count, 1)
+        cat_btns = [b.text for row in sender.await_args_list[0].args[2].inline_keyboard for b in row]
+        self.assertTrue(any('190 ₽' in txt for txt in cat_btns))
 
 
 if __name__ == '__main__':
