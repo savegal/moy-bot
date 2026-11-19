@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import sqlite3
+from datetime import datetime, timezone
 from time import monotonic
 
 from aiogram import Router, Bot, F
@@ -32,7 +33,7 @@ from .ui import (
     button_tariff_name, cb, kb, link, esc, duration, duration_phrase, fmt_rub, is_https_url, is_menu_navigation_text,
     menu, plural_channels, product_text, remaining_time_label, rendered_section, send_section, send_text,
     tariff_channel_count, tariff_view_media, MENU_CATALOG, MENU_ACCESS, MENU_REVIEWS, MENU_PROFILE, MENU_HELP, MENU_HELP_SIMPLE, MENU_INFO,
-    MENU_STATS_PREFIX,
+    MENU_LEGACY_CATALOG, MENU_STATS_PREFIX,
 )
 
 router = Router(name='user')
@@ -158,12 +159,10 @@ async def welcome(message: Message, db: Database, shop: Shop, config: Config, st
         elif deep_arg in ('privacy', 'policy'):
             await send_text(message.answer, get_privacy_policy(project_name), await _help_back_markup(db))
             return
-        elif deep_arg.startswith('g_'):
-            await show_catalog(message, shop, db, section_key='catalog')
-            return
-
-    section_key = 'welcome' if existing is None else 'welcome_back'
-    await show_catalog(message, shop, db, section_key=section_key)
+    await send_welcome_message(message, db, message.from_user.full_name, is_new=existing is None)
+    await show_catalog(message, shop, db)
+    if deep_arg.startswith('g_'):
+        return
 
     if message.from_user.id in config.admin_ids:
         await message.answer(
@@ -247,7 +246,7 @@ async def show_catalog(target: Message | CallbackQuery, shop: Shop, db: Database
     await send_section(msg, row, kb(*rows) if rows else None, fallback='Каталог временно пуст.')
 
 
-@router.message(F.text.in_({MENU_CATALOG, '◈ Каталог', 'Каталог', '🔐 Доступ к контенту'}))
+@router.message(F.text.in_({MENU_CATALOG, MENU_LEGACY_CATALOG, '◈ Каталог', 'Каталог', '🔐 Доступ к контенту'}))
 async def catalog_message(message: Message, shop: Shop, db: Database):
     await db.register(message.from_user.id, message.from_user.username or '', message.from_user.full_name)
     await show_catalog(message, shop, db)
@@ -311,6 +310,7 @@ async def _render_tariff_view(call: CallbackQuery, shop: Shop, tid: int, *, is_p
     text = product_text(
         t, stars, buyers=buyers, promo=code, rub=rub, upgrade=effective_upgrade,
         allow_vip_nudge=not already_has_ultra_or_above,
+        project_name=await shop.db.project_name(),
     )
 
     rows = []
@@ -368,7 +368,8 @@ async def _render_tariff_view(call: CallbackQuery, shop: Shop, tid: int, *, is_p
                 elif diff <= 0:
                     upsell_label = f"🔥 Забрать {ultra_name} ({u_scope}) — {fmt_rub(eff_ultra_rub)} ₽"
                 elif diff <= 550 and u_channels > 1:
-                    upsell_label = f"⭐️ {ultra_name} · {u_term} (+{fmt_rub(diff)} ₽)"
+                    term_suffix = f" · {u_term}" if u_term not in ultra_name.lower() else ""
+                    upsell_label = f"⭐️ {ultra_name}{term_suffix} (+{fmt_rub(diff)} ₽)"
                 elif diff <= 550:
                     upsell_label = f"⭐️ {ultra_name} (+{fmt_rub(diff)} ₽)"
                 else:
@@ -777,7 +778,7 @@ async def successful_stars(message: Message, shop: Shop, config: Config | None =
             await message.answer(
                 '🔥 <b>Оплата успешно подтверждена!</b> 🎉\n\n'
                 'Бот уже выпускает персональную ссылку для входа — через несколько секунд она придёт сюда автоматически.\n'
-                'Также все ссылки всегда сохраняются в разделе <b>«👤 Профиль / Промокод» → «🔓 Мои доступы»</b>.\n\n'
+                'Также все ссылки всегда сохраняются в разделе <b>«🔓 Мои доступы»</b>.\n\n'
                 '🔞 <i>Приятного просмотра без цензуры!</i>',
                 reply_markup=kb(*rows)
             )
@@ -804,7 +805,7 @@ async def check_payment(call: CallbackQuery, bot: Bot, shop: Shop, payments: Pay
         return await call.answer('Этот счёт уже закрыт или оплачен другим платежом.', show_alert=True)
     if order['status'] == 'paid':
         return await call.answer(
-            'Оплата подтверждена! Доступ в разделе «👤 Профиль / Промокод» → «🔓 Мои доступы».',
+            'Оплата подтверждена! Доступ в разделе «🔓 Мои доступы».',
             show_alert=True,
         )
     await call.answer()
@@ -834,7 +835,7 @@ async def check_payment(call: CallbackQuery, bot: Bot, shop: Shop, payments: Pay
             else:
                 text = ('🔥 <b>Оплата подтверждена!</b>\n\n'
                         'Бот готовит ссылку — она придёт сюда автоматически. '
-                        'Её также можно открыть в разделе «👤 Профиль / Промокод» → «🔓 Мои доступы».')
+                        'Её также можно открыть в разделе «🔓 Мои доступы».')
                 markup = kb((cb('🔓 Мои доступы', 'accesses', style='success'),), *perks)
         else:
             text = (
@@ -1034,14 +1035,9 @@ async def my_accesses(target: Message | CallbackQuery, shop: Shop, page: int = 0
             if getattr(btn, 'callback_data', '') and str(btn.callback_data).startswith('up_pay_options:')
         ]
         if upgrade_btns:
-            has_u = any('ULTRA VIP' in (getattr(btn, 'text', '') or '') for btn in upgrade_btns)
-            has_d = any('DIAMOND CLUB' in (getattr(btn, 'text', '') or '') for btn in upgrade_btns)
-            tier_label = ('ULTRA VIP / DIAMOND CLUB' if (has_u and has_d)
-                          else 'DIAMOND CLUB' if has_d
-                          else 'ULTRA VIP')
             perk_lines = [
                 '👑 <b>VIP-привилегии участника</b>\n',
-                f'• Апгрейд до <b>{tier_label}</b> с полным зачётом прошлых покупок',
+                '• Апгрейд с зачётом прошлых покупок',
             ]
             await msg.answer('\n'.join(perk_lines), reply_markup=kb(*perks))
 
@@ -1068,7 +1064,7 @@ async def refresh_invite(call: CallbackQuery, access: AccessManager, bot: Bot):
 @router.callback_query(F.data == 'promo')
 async def promo_start(call: CallbackQuery, state: FSMContext):
     await state.set_state(UserInput.promo)
-    await msg.answer(
+    await call.message.answer(
         '🎫 <b>Активация промокода</b>\n\n'
         'Отправь секретный промокод из рассылки или акции в ответном сообщении.\n\n'
         'Для отмены нажми: /cancel'
@@ -1142,7 +1138,7 @@ async def render_help_message(target: Message | CallbackQuery, db: Database, bot
     support_url = (await db.setting('support_url') or {}).get('value', '').strip() if visible else ''
     show_reviews = await reviews_visible(db)
 
-    rows = []
+    rows = [[cb('🎫 Ввести промокод', 'promo')], [cb('👤 Профиль / Покупки', 'profile')]]
     if is_https_url(support_url):
         rows.append([link('💬 Поддержка ↗', support_url)])
 
@@ -1166,7 +1162,7 @@ async def render_help_message(target: Message | CallbackQuery, db: Database, bot
                        markup=markup, fallback=content)
 
 
-@router.message(F.text.in_({MENU_HELP, MENU_HELP_SIMPLE, '☏ Помощь', 'Помощь', '❓ Помощь/Отзывы'}))
+@router.message(F.text.in_({MENU_HELP, MENU_HELP_SIMPLE, '💬 Помощь / Отзывы', '☏ Помощь', 'Помощь', '❓ Помощь/Отзывы'}))
 async def help_message(message: Message, db: Database, bot: Bot, config: Config):
     if not await help_visible(db):
         return await message.answer('Раздел «Помощь» временно скрыт.')
@@ -1293,12 +1289,13 @@ async def privacy_cmd(message: Message, db: Database):
 
 @router.message(F.text.in_({MENU_REVIEWS, MENU_INFO, '⭐ Отзывы и обновления', '≡ Информация', 'Информация', 'ℹ️ Информация'}))
 async def info_message(message: Message, db: Database):
-    reviews_url = ''
+    rows = []
     if await reviews_visible(db):
         reviews_url = (await db.setting('reviews_url') or {}).get('value', '').strip()
-    rows = []
-    if is_https_url(reviews_url):
-        rows.append([link('⭐ Отзывы ↗', reviews_url)])
+        if is_https_url(reviews_url):
+            rows.append([link('⭐ Отзывы ↗', reviews_url)])
+        else:
+            rows.append([cb('⭐ Смотреть отзывы', 'contact:reviews')])
     row = await rendered_section(db, 'info', name=message.from_user.full_name)
     await send_section(message, row, markup=kb(*rows) if rows else None)
 

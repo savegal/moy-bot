@@ -266,7 +266,7 @@ class AccessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.bot.messages, [])
 
     async def test_expiry_upsell_push_sent_once_and_skipped_when_ultra_owned(self):
-        await self.db.execute("UPDATE tariffs SET channel_ids='-100111,-100222' WHERE id=3")
+        await self.db.execute("UPDATE tariffs SET channel_ids='-100111,-100222' WHERE id=5")
         order = await self.paid()
         await self.access.provision(self.bot)
         self.bot.messages.clear()
@@ -283,7 +283,7 @@ class AccessTests(unittest.IsolatedAsyncioTestCase):
         await self.db.register(202, 'vip', 'VIP')
         o_trial = await self.shop.create_order(202, 1, 'stars')
         await self.shop.settle(o_trial['id'], 'stars', charge_id='vip-1')
-        o_ultra = await self.shop.create_order(202, 3, 'stars')
+        o_ultra = await self.shop.create_order(202, 5, 'stars')
         await self.shop.settle(o_ultra['id'], 'stars', charge_id='vip-2')
         self.bot.messages.clear()
         await self.db.execute("UPDATE purchases SET expires_at=? WHERE order_id=?", (in_seconds(-1), o_trial['id']))
@@ -305,7 +305,7 @@ class AccessTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_whale_radar_alerts_vip_high_ticket_custom_and_ltv_once(self):
         cfg = Config('123:mock', frozenset({901, 902}))
-        await self.db.execute("UPDATE tariffs SET channel_ids='-100111' WHERE id IN (2, 3)")
+        await self.db.execute("UPDATE tariffs SET channel_ids='-100111' WHERE id=2")
 
         # Low-ticket 190 RUB order: no alert
         small = await self.paid()
@@ -330,8 +330,8 @@ class AccessTests(unittest.IsolatedAsyncioTestCase):
 
         # High-ticket Diamond tariff purchase triggers admin whale alert too
         await self.db.register(303, 'rich', 'Rich')
-        await self.db.execute("UPDATE tariffs SET channel_ids='-1003' WHERE id=4")
-        hi_ord = await self.shop.create_order(303, 4, 'cryptopay')
+        await self.db.execute("UPDATE tariffs SET channel_ids='-1003', active=1 WHERE id=7")
+        hi_ord = await self.shop.create_order(303, 7, 'cryptopay')
         await self.shop.set_external(hi_ord['id'], 'cryptopay', 'cp-rich', 'https://t.me/CryptoBot?start=Rich')
         await self.shop.settle(hi_ord['id'], 'cryptopay', external_id='cp-rich')
         self.bot.messages.clear()

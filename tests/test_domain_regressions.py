@@ -297,7 +297,7 @@ class DomainRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.db.read("SELECT discount FROM promos WHERE code='LUXURYNEW'"))['discount'], 150)
         self.assertEqual((await self.db.read("SELECT discount FROM promos WHERE code='KEEP200'"))['discount'], 200)
         self.assertEqual((await self.shop.get_tariff(1))['stars'], 333)
-        self.assertEqual((await self.db.read('PRAGMA user_version'))['user_version'], 28)
+        self.assertEqual((await self.db.read('PRAGMA user_version'))['user_version'], 30)
 
         await self.db.execute("UPDATE promos SET discount=250 WHERE code='LUXURYNEW'")
         await self.db.execute('PRAGMA user_version=10')
@@ -385,7 +385,7 @@ class DomainRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(t2['title'], SEED_TARIFFS[1][0])
         self.assertEqual((t2['preview_description'], t2['rub'], t2['stars']), ('Custom preview', 777, 333))
         self.assertEqual((t5['title'], t5['preview_description'], t5['tier']), (SEED_TARIFFS[4][0], SEED_TARIFFS[4][5], 'ultra'))
-        self.assertEqual((await self.db.read('PRAGMA user_version'))['user_version'], 28)
+        self.assertEqual((await self.db.read('PRAGMA user_version'))['user_version'], 30)
 
     async def test_v12_upgrade_updates_hybrid_sections_seed_prices_and_disables_default_promo(self):
         self.assertEqual(set(V11_SECTION_DIGESTS), {'join_welcome', 'welcome', 'welcome_back', 'catalog'})
@@ -421,7 +421,7 @@ class DomainRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(((await self.shop.get_tariff(5))['rub'], (await self.shop.get_tariff(5))['stars']), (1190, 620))
         self.assertEqual((await self.db.read("SELECT enabled FROM promos WHERE code='LUXURYNEW'"))['enabled'], 0)
         self.assertEqual((await self.db.read("SELECT enabled FROM promos WHERE code='HOT300'"))['enabled'], 1)
-        self.assertEqual((await self.db.read('PRAGMA user_version'))['user_version'], 28)
+        self.assertEqual((await self.db.read('PRAGMA user_version'))['user_version'], 30)
 
         await self.db.execute("UPDATE promos SET discount=200,enabled=1 WHERE code='LUXURYNEW'")
         await self.db.execute('PRAGMA user_version=11')
@@ -489,7 +489,7 @@ class DomainRegressionTests(unittest.IsolatedAsyncioTestCase):
 
             migrated = Database(legacy_path)
             await migrated.init()
-            self.assertEqual((await migrated.read('PRAGMA user_version'))['user_version'], 28)
+            self.assertEqual((await migrated.read('PRAGMA user_version'))['user_version'], 30)
             self.assertIsNone(await migrated.setting('model_url'))
             self.assertIsNone(await migrated.read("SELECT 1 FROM sqlite_master WHERE type='table' AND name='custom_invoices'"))
             self.assertIsNone(await migrated.read("SELECT 1 FROM sqlite_master WHERE type='table' AND name='custom_requests'"))
@@ -501,6 +501,20 @@ class DomainRegressionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((await migrated.read("SELECT title FROM orders WHERE id='ord1'"))['title'], 'VIP Legacy')
             self.assertEqual((await migrated.read("SELECT whale_alert_sent FROM orders WHERE id='ord1'"))['whale_alert_sent'], 1)
             self.assertEqual(await migrated.read('PRAGMA foreign_key_check', many=True), [])
+
+    async def test_current_storefront_credits_790_and_890_rub_in_full(self):
+        await self.db.execute("UPDATE tariffs SET channel_ids='-100555' WHERE id IN (3, 4, 5)")
+        for uid, tariff_id, paid_rub, due in ((303, 3, 790, 200), (404, 4, 890, 100)):
+            with self.subTest(tariff_id=tariff_id):
+                await self.db.register(uid)
+                order = await self.shop.create_order(uid, tariff_id, 'stars')
+                await self.shop.settle(order['id'], 'stars', charge_id=f'credit-{uid}')
+                offer, = await self.shop.upgrade_offers(uid)
+                self.assertEqual(offer['tariff']['id'], 5)
+                self.assertEqual(offer['saved_rub'], paid_rub)
+                self.assertEqual(offer['rub'], due)
+                upgrade = await self.shop.create_upgrade_order(uid, 5, 'stars')
+                self.assertEqual(upgrade['amount_rub'], due)
 
     async def test_upgrade_offers_credit_floor_and_ownership_rules(self):
         await self.db.execute("UPDATE tariffs SET channel_ids='-100555' WHERE id IN (2, 3, 4, 5, 6, 7)")
@@ -619,7 +633,7 @@ class DomainRegressionTests(unittest.IsolatedAsyncioTestCase):
         await self.db.set_setting('join_welcome', old_v21_join_welcome, media_id='jcover', media_type='photo')
         await self.db.execute('PRAGMA user_version=21')
         await self.db.init()
-        self.assertEqual((await self.db.read('PRAGMA user_version'))['user_version'], 28)
+        self.assertEqual((await self.db.read('PRAGMA user_version'))['user_version'], 30)
         self.assertEqual((await self.db.setting('join_welcome'))['value'], DEFAULT_SETTINGS['join_welcome'])
         self.assertEqual((await self.db.setting('join_welcome'))['media_id'], 'jcover')
 
@@ -647,7 +661,7 @@ class DomainRegressionTests(unittest.IsolatedAsyncioTestCase):
         await self.db.set_setting('join_welcome', old_v27_join_welcome, media_id='jcover27', media_type='photo')
         await self.db.execute('PRAGMA user_version=27')
         await self.db.init()
-        self.assertEqual((await self.db.read('PRAGMA user_version'))['user_version'], 28)
+        self.assertEqual((await self.db.read('PRAGMA user_version'))['user_version'], 30)
         self.assertEqual((await self.db.setting('join_welcome'))['value'], DEFAULT_SETTINGS['join_welcome'])
         self.assertEqual((await self.db.setting('join_welcome'))['media_id'], 'jcover27')
 

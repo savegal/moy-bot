@@ -250,6 +250,49 @@ class PaymentFlowTests(IsolatedAsyncioTestCase):
         await self.shop.refund_stars('no-channel', amount)
         self.assertEqual((await campaign_summary(self.db, 7))[0]['buyers'], 0)
 
+    async def test_start_menu_promo_and_repeat_tariff_view(self):
+        self.start_dispatcher()
+        await self.db.set_setting('project_name', 'Test & Club')
+        await self.db.set_setting('reviews_visible', '1')
+        for uid, command in ((301, '/start'), (302, '/start g_test')):
+            with self.subTest(command=command):
+                await self.feed(message=self.message(uid, text=command))
+                welcome, catalog = self.session.for_method('sendMessage')[-2:]
+                self.assertEqual(welcome.reply_markup.keyboard[0][0].text, '📂 Каталог фуллов')
+                self.assertEqual(catalog.reply_markup.inline_keyboard[4][0].callback_data, 'tariff:5')
+                await self.db.execute(
+                    'UPDATE users SET view_reminder_sent=1, view_reminder_sent_at=? WHERE user_id=?',
+                    (in_seconds(-60), uid),
+                )
+                count = len(self.session.for_method('sendMessage'))
+                await self.click(uid, 'tariff:5')
+                messages = self.session.for_method('sendMessage')[count:]
+                self.assertEqual(len(messages), 1)
+                self.assertIn('Test &amp; Club', messages[0].text)
+                self.assertNotIn('{project_name}', messages[0].text)
+                self.assertEqual((await self.shop.profile(uid))['view_reminder_sent'], 1)
+
+        await self.feed(message=self.message(301, text='🔞 Каталог фуллов'))
+        self.assertEqual(self.session.for_method('sendMessage')[-1].reply_markup.inline_keyboard[0][0].callback_data,
+                         'tariff:1')
+        await self.feed(message=self.message(301, text='💬 Помощь / Отзывы'))
+        markup = self.session.for_method('sendMessage')[-1].reply_markup
+        self.assertEqual([row[0].callback_data for row in markup.inline_keyboard[:2]], ['promo', 'profile'])
+        await self.click(301, 'promo')
+        self.assertIn('Активация промокода', self.session.for_method('sendMessage')[-1].text)
+        await self.feed(message=self.message(301, text='⭐ Отзывы и обновления'))
+        self.assertEqual(self.session.for_method('sendMessage')[-1].reply_markup.inline_keyboard[0][0].callback_data,
+                         'contact:reviews')
+
+    async def test_paid_channel_greeting_explains_access_before_decline(self):
+        self.start_dispatcher()
+        await self.db.set_setting('greeting_enabled', '1')
+        await self.join(301, -1001)
+        greeting = self.session.for_method('sendPhoto')[-1]
+        self.assertIn('выдаётся после оплаты', greeting.caption)
+        self.assertNotIn('принята', greeting.caption)
+        self.assertEqual(self.session.for_method('declineChatJoinRequest')[-1].user_id, 301)
+
     async def test_reviews_visibility_changes_menus_and_disables_old_callbacks(self):
         self.start_dispatcher()
         reviews_url = 'https://t.me/test_reviews'

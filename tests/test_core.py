@@ -63,21 +63,28 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.temp.cleanup()
 
     async def test_seeded_data_no_false_sales(self):
-        self.assertEqual(len(await self.shop.catalogs()),7)
+        self.assertEqual(len(await self.shop.catalogs()), 5)
         self.assertEqual((await self.shop.statistics())['paid'],0)
         self.assertEqual((await self.shop.statistics())['users'],2)
 
     async def test_upgrade_preserves_custom_storefront_and_products(self):
         await self.db.set_setting('welcome', '<b>Custom welcome</b>')
         await self.db.set_setting('info', 'About {project_name}')
+        await self.db.set_setting('promo_push_discount', '17%')
+        await self.db.set_setting('payment', media_id='custom-photo', media_type='photo')
         await self.db.execute("""UPDATE tariffs SET title='Custom product',description='Custom description',
-            rub=777,stars=333,duration_days=30,preview_description='Custom preview' WHERE id=1""")
+            rub=776,stars=333,duration_days=30,preview_description='Custom preview' WHERE id=1""")
+        await self.db.execute('UPDATE tariffs SET active=1 WHERE id=8')
         before = await self.db.read('SELECT * FROM tariffs ORDER BY id', many=True)
-        for version in range(4):
+        for version in (28, 29, 0, 1, 2, 3):
             with self.subTest(version=version):
                 await self.db.execute(f'PRAGMA user_version={version}')
                 await self.db.init()
-                self.assertEqual(await self.db.read('SELECT * FROM tariffs ORDER BY id', many=True), before)
+                self.assertEqual(await self.shop.get_tariff(1), before[0])
+                if version >= 28:
+                    self.assertEqual(await self.db.read('SELECT * FROM tariffs ORDER BY id', many=True), before)
+                    self.assertEqual((await self.db.setting('promo_push_discount'))['value'], '17%')
+                    self.assertEqual((await self.db.setting('payment'))['media_id'], 'custom-photo')
                 self.assertEqual((await self.db.setting('welcome'))['value'], '<b>Custom welcome</b>')
                 self.assertEqual((await self.db.setting('info'))['value'], 'About {project_name}')
 

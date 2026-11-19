@@ -342,7 +342,7 @@ class PromoAndReviewPushTests(unittest.IsolatedAsyncioTestCase):
 
             migrated = Database(db_path)
             await migrated.init()
-            self.assertEqual((await migrated.read('PRAGMA user_version'))['user_version'], 29)
+            self.assertEqual((await migrated.read('PRAGMA user_version'))['user_version'], 30)
             user_cols = {r['name'] for r in await migrated.read('PRAGMA table_info(users)', many=True)}
             promo_cols = {r['name'] for r in await migrated.read('PRAGMA table_info(promos)', many=True)}
             self.assertTrue({'promo_push_sent', 'promo_push_code', 'promo_push_sent_at', 'last_review_push_at'} <= user_cols)
@@ -601,7 +601,7 @@ class PromoAndReviewPushTests(unittest.IsolatedAsyncioTestCase):
         )
         rid = (await self.db.read('SELECT id FROM reviews ORDER BY id DESC LIMIT 1'))['id']
         await self.state.set_state(admin.AdminState.review_caption)
-        await self.state.update_data(editing_review_id=rid)
+        await self.state.update_data(review_id=rid)
         msg = self.admin_msg(text='А' * 960)
         await admin.review_caption_save(msg, self.state, self.db)
         self.assertIn('950', msg.answer.await_args.args[0])
@@ -758,7 +758,7 @@ class PromoAndReviewPushTests(unittest.IsolatedAsyncioTestCase):
             con.close()
             migrated = Database(v24_path)
             await migrated.init()
-            self.assertEqual((await migrated.read('PRAGMA user_version'))['user_version'], 29)
+            self.assertEqual((await migrated.read('PRAGMA user_version'))['user_version'], 30)
             rub50 = await migrated.read("SELECT discount, discount_percent FROM promos WHERE code='RUB50'")
             self.assertEqual((rub50['discount'], rub50['discount_percent']), (50, 0))
 

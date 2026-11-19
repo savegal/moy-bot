@@ -234,7 +234,7 @@ class V16AuditAndFunnelTests(unittest.IsolatedAsyncioTestCase):
 
             migrated = Database(legacy_path)
             await migrated.init()
-            self.assertEqual((await migrated.read('PRAGMA user_version'))['user_version'], 29)
+            self.assertEqual((await migrated.read('PRAGMA user_version'))['user_version'], 30)
             p = await migrated.read("SELECT * FROM purchases WHERE order_id='ord-old'")
             self.assertEqual((p['revoked_by_admin'], p['post_join_upsell_sent'], p['pre_expiry_upsell_sent']), (0, 1, 1))
 
@@ -369,7 +369,7 @@ class V16AuditAndFunnelTests(unittest.IsolatedAsyncioTestCase):
             await v18_db.execute('PRAGMA user_version=18')
 
             await v18_db.init()
-            self.assertEqual((await v18_db.read('PRAGMA user_version'))['user_version'], 29)
+            self.assertEqual((await v18_db.read('PRAGMA user_version'))['user_version'], 30)
             cat_row = await v18_db.setting('catalog')
             self.assertEqual(cat_row['value'], DEFAULT_SETTINGS['catalog'])
             self.assertEqual((cat_row['media_id'], cat_row['media_type']), ('cat_cover', 'photo'))
@@ -540,7 +540,7 @@ class V16AuditAndFunnelTests(unittest.IsolatedAsyncioTestCase):
             await v25_db.execute('PRAGMA user_version=25')
 
             await v25_db.init()
-            self.assertEqual((await v25_db.read('PRAGMA user_version'))['user_version'], 29)
+            self.assertEqual((await v25_db.read('PRAGMA user_version'))['user_version'], 30)
             self.assertEqual((await v25_db.setting('welcome'))['value'], 'Custom welcome text {name}')
             self.assertEqual((await v25_db.setting('welcome'))['media_id'], 'w_cov')
             self.assertEqual((await v25_db.setting('info'))['value'], DEFAULT_SETTINGS['info'])
@@ -597,7 +597,7 @@ class V16AuditAndFunnelTests(unittest.IsolatedAsyncioTestCase):
             await v26_db.execute('PRAGMA user_version=26')
 
             await v26_db.init()
-            self.assertEqual((await v26_db.read('PRAGMA user_version'))['user_version'], 29)
+            self.assertEqual((await v26_db.read('PRAGMA user_version'))['user_version'], 30)
             self.assertIsNone(await v26_db.setting('model_url'))
             self.assertIsNone(await v26_db.read("SELECT 1 FROM sqlite_master WHERE type='table' AND name='custom_invoices'"))
             self.assertIsNone(await v26_db.read("SELECT 1 FROM sqlite_master WHERE type='table' AND name='custom_requests'"))

@@ -18,11 +18,11 @@ from .ui import (
 log = logging.getLogger(__name__)
 
 
-def _lock_for(db: Database) -> asyncio.Lock:
-    lock = getattr(db, '_alerts_lock', None)
+def _lock_for(db: Database, key: str = '_alerts_lock') -> asyncio.Lock:
+    lock = getattr(db, key, None)
     if lock is None:
         lock = asyncio.Lock()
-        setattr(db, '_alerts_lock', lock)
+        setattr(db, key, lock)
     return lock
 
 
@@ -159,7 +159,7 @@ async def paying_perk_rows(shop: Shop, db: Database, user_id: int) -> list[tuple
     rows: list[tuple] = []
     offers = await shop.upgrade_offers(user_id)
     for offer in offers:
-        short_name = 'DIAMOND CLUB' if offer['kind'] == 'DIAMOND' else 'ULTRA VIP'
+        short_name = button_tariff_name(offer['tariff']['title'])
         promo_rub, _, promo_code = await shop.user_price(user_id, offer['tariff'])
         if promo_code and promo_rub < offer['rub']:
             rows.append((
@@ -184,7 +184,7 @@ async def paying_perk_rows(shop: Shop, db: Database, user_id: int) -> list[tuple
 async def dispatch_whale_alerts(bot, db: Database, config: Config | None) -> int:
     """Notify admins on VIP/high-ticket payments."""
     alerts_sent = 0
-    async with _lock_for(db):
+    async with _lock_for(db, '_whale_alerts_lock'):
         rows = await db.read(
             """SELECT o.*, o.rowid AS ord_rowid, COALESCE(o.paid_at, o.created_at) AS ord_ts,
                       COALESCE(t.tier, '') AS tariff_tier, u.username, u.name AS user_name
@@ -281,7 +281,7 @@ async def send_expiry_upsell_if_needed(bot, db: Database, shop: Shop, purchase_i
              AND o2.status='paid' AND o2.refund_requested_at IS NULL
              AND (p2.expires_at IS NULL OR p2.expires_at>?)
              AND (
-                 CASE COALESCE(t2.tier, '')
+                 CASE LOWER(COALESCE(t2.tier, ''))
                      WHEN 'ultra' THEN 1
                      WHEN 'diamond' THEN 1
                      WHEN 'regular' THEN (
@@ -291,8 +291,10 @@ async def send_expiry_upsell_if_needed(bot, db: Database, shop: Shop, purchase_i
                          ) THEN 1 ELSE 0 END
                      )
                      ELSE (
-                         UPPER(p2.title) LIKE '%ULTRA%'
-                         OR UPPER(p2.title) LIKE '%DIAMOND%'
+                         UNICODE_UPPER(p2.title) LIKE '%ULTRA%'
+                         OR UNICODE_UPPER(p2.title) LIKE '%DIAMOND%'
+                         OR UNICODE_UPPER(p2.title) LIKE '%VIP MAX%'
+                         OR REPLACE(UNICODE_UPPER(p2.title), 'Ё', 'Е') LIKE '%ВСЕ СРАЗУ%'
                          OR (p2.expires_at IS NULL AND (
                              UPPER(p2.title) LIKE '%BLACK%'
                              OR COALESCE(t2.rub, o2.amount_rub, 0) >= 2490
@@ -346,14 +348,14 @@ async def send_expiry_upsell_if_needed(bot, db: Database, shop: Shop, purchase_i
 
 
 async def _find_entry_tariff(shop: Shop) -> dict | None:
-    """Return an active deliverable 1-day trial if present, otherwise the cheapest entry tariff."""
+    """Return the cheapest deliverable short trial, falling back to the cheapest deliverable tariff."""
     deliverable = [
         t for t in await shop.catalogs()
         if t['channel_ids'] or t['delivery_urls'] != '[]'
     ]
     if not deliverable:
         return None
-    trial = next((t for t in deliverable if t['duration_days'] == 1), None)
+    trial = next((t for t in deliverable if 1 <= t['duration_days'] <= 3), None)
     return trial or min(deliverable, key=lambda t: (t['rub'], t['stars'], t['id']))
 
 
@@ -599,7 +601,7 @@ async def dispatch_tariff_view_reminders(
             if ultra and ultra['id'] != tid:
                 ultra_rub = (await shop.user_price(row['user_id'], ultra))[0]
                 buttons.append((cb(
-                    f"🔥 Или «{ultra['title']}» · {fmt_rub(ultra_rub)} ₽",
+                    f"🔥 Или «{button_tariff_name(ultra['title'])}» · {fmt_rub(ultra_rub)} ₽",
                     f"pay_options:{ultra['id']}",
                     style='primary',
                 ),))
@@ -649,9 +651,10 @@ async def dispatch_trial_upsell_touchpoints(
                  AND UPPER(p.title) NOT LIKE '%ULTRA%'
                  AND UPPER(p.title) NOT LIKE '%DIAMOND%'
                  AND UPPER(p.title) NOT LIKE '%BLACK%'
-                 AND UPPER(p.title) NOT LIKE '%ВСЁ СРАЗУ%'
+                 AND UNICODE_UPPER(p.title) NOT LIKE '%VIP MAX%'
+                 AND REPLACE(UNICODE_UPPER(p.title), 'Ё', 'Е') NOT LIKE '%ВСЕ СРАЗУ%'
                  AND (
-                     (COALESCE(t.duration_days, o.duration_days)<=3 AND p.expires_at IS NOT NULL AND p.expires_at>?)
+                     (o.duration_days BETWEEN 1 AND 3 AND p.expires_at IS NOT NULL AND p.expires_at>?)
                      OR (COALESCE(t.rub, o.amount_rub) < 1000 AND (p.expires_at IS NULL OR p.expires_at>?))
                  )
                  AND (
@@ -703,7 +706,7 @@ async def dispatch_trial_upsell_touchpoints(
                WHERE COALESCE(u.broadcast_opt_out, 0)=0
                  AND o.status='paid' AND o.provider!='admin' AND o.refund_requested_at IS NULL
                  AND o.order_kind='tariff'
-                 AND COALESCE(t.duration_days, o.duration_days)<=3
+                 AND o.duration_days BETWEEN 1 AND 3
                  AND p.revoked_by_admin=0
                  AND p.pre_expiry_upsell_sent=0
                  AND p.expires_at IS NOT NULL AND p.expires_at>? AND p.expires_at<=?
@@ -783,24 +786,17 @@ async def dispatch_cold_start_nudges(
             if not claimed:
                 continue
             buttons: list[tuple] = []
-            if entry:
-                entry_rub, entry_stars, active_code = await shop.user_price(row['user_id'], entry)
-                entry_cb = f"pay_options:{entry['id']}"
-                entry_btn = f"⚡ Пропуск TikTok (3 дн.) · {fmt_rub(entry_rub)} ₽"
-                buttons.append((cb(entry_btn, entry_cb),))
-            if ultra and (not entry or ultra['id'] != entry['id']):
-                ultra_rub, ultra_stars, active_code = await shop.user_price(row['user_id'], ultra)
-                ultra_cb = f"pay_options:{ultra['id']}"
-                ultra_btn = f"🔥 ВСЁ СРАЗУ (Навсегда) · {fmt_rub(ultra_rub)} ₽"
-                buttons.append((cb(ultra_btn, ultra_cb, style='success'),))
+            lines = ['👋 <b>Не определился с разделом?</b>', 'Вот варианты доступа:']
+            featured = {tariff['id']: tariff for tariff in (entry, ultra) if tariff}
+            for tariff in featured.values():
+                rub, _, _ = await shop.user_price(row['user_id'], tariff)
+                name = button_tariff_name(tariff['title'])
+                label = f"{name} · {fmt_rub(rub)} ₽"
+                style = 'success' if tariff is ultra else None
+                buttons.append((cb(label, f"pay_options:{tariff['id']}", style=style),))
+                lines.append(f"• <b>{esc(tariff['title'])}</b> — {fmt_rub(rub)} ₽")
             buttons.append((cb('📂 Открыть полный каталог', 'catalog'),))
-            text = (
-                "👋 <b>Не определился с разделом?</b>\n"
-                "Большинство начинает с одного из двух вариантов:\n"
-                "1. <b>Пропуск TikTok (190 ₽)</b> — если нужен конкретный тренд прямо сейчас\n"
-                "2. <b>«ВСЁ СРАЗУ» (990 ₽)</b> — навсегда открыть все 4 закрытых канала (выходит ~248 ₽ за канал)"
-            )
+            text = '\n'.join(lines)
             if await send_campaign(bot, db, row['user_id'], 'cold_nudge', text, kb(*buttons)):
                 sent += 1
-    return sent
     return sent

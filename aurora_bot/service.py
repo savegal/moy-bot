@@ -105,7 +105,7 @@ def parse_date(value: str | None):
     return datetime.fromisoformat(value) if value else None
 
 
-UPGRADE_FLOOR_RUB = 300
+UPGRADE_FLOOR_RUB = 100
 
 
 def scale_stars(rub: int, stars: int, final_rub: int) -> int:
@@ -211,7 +211,7 @@ def tariff_tier_kind(title: str = '', tier: str = '') -> str:
     title_up = (title or '').upper()
     if 'DIAMOND' in title_up or 'VIP MAX' in title_up:
         return 'diamond'
-    if 'ULTRA' in title_up or 'ВСЁ СРАЗУ' in title_up:
+    if 'ULTRA' in title_up or 'ВСЕ СРАЗУ' in title_up.replace('Ё', 'Е'):
         return 'ultra'
     return ''
 
@@ -258,7 +258,7 @@ def _upgrade_offers_con(con: sqlite3.Connection, user_id: int) -> list[dict]:
             kind = 'ULTRA'
         else:
             continue
-        upgraded_rub = max(UPGRADE_FLOOR_RUB, min(row['rub'], row['rub'] - credit))
+        upgraded_rub = min(row['rub'], max(UPGRADE_FLOOR_RUB, row['rub'] - credit))
         if upgraded_rub >= row['rub']:
             continue
         upgraded_stars = scale_stars(row['rub'], row['stars'], upgraded_rub)

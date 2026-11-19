@@ -208,12 +208,13 @@ def _conversion_nudge(tariff: dict, rub_price: int | None, upgrade: dict | None,
 
 def product_text(tariff: dict, stars: int, *, buyers: int | None = None, promo: str = '',
                  rub: int | None = None, upgrade: dict | None = None,
-                 allow_vip_nudge: bool = True) -> str:
+                 allow_vip_nudge: bool = True, project_name: str = DEFAULT_PROJECT_NAME) -> str:
     del allow_vip_nudge
     details = buyers is None
     title = esc(tariff['title'])
     heading = f'👀 <b>Что внутри «{title}»?</b>' if details else f'🔐 <b>{title}</b>'
-    description = (tariff.get('preview_description', '') if details else tariff.get('description', '')).strip()
+    description_key = 'preview_description' if details else 'description'
+    description = (tariff.get(description_key) or '').strip().replace('{project_name}', project_name)
     blocks = [heading]
     if description:
         blocks.append(f'<blockquote>{esc(description)}</blockquote>')
@@ -229,7 +230,7 @@ def product_text(tariff: dict, stars: int, *, buyers: int | None = None, promo: 
             f'🕘 Доступ: <b>{term}</b>\n'
             f'💳 Обычная цена: <s>{base_stars} Stars (~{fmt_rub(base_rub)} ₽)</s>\n'
             f"⚡ <b>Цена апгрейда: {fmt_rub(upgrade['rub'])} ₽</b> <i>(или {upgrade['stars']} ⭐)</i>\n"
-            f'💡 Твоя оплата за предыдущий раздел зачтена на 100% (скидка {fmt_rub(applied_credit)} ₽)'
+            f'💡 Твоя оплата за предыдущий раздел зачтена (скидка {fmt_rub(applied_credit)} ₽)'
         )
     else:
         if promo and rub_price:

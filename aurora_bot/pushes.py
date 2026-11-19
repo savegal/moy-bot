@@ -11,7 +11,7 @@ from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramFor
 from .alerts import _lock_for
 from .analytics import campaign_delivered, prepare_campaign
 from .db import DEFAULT_PROJECT_NAME, Database, in_seconds, now
-from .service import Shop, price_with_promo, promo_discount_label
+from .service import Shop, price_with_promo, promo_discount_label, tariff_tier_kind
 from .ui import _utf16_len, button_tariff_name, cb, esc, fmt_rub, is_https_url, kb, link, remaining_time_label, send_text
 
 
@@ -395,21 +395,19 @@ async def send_promo_push_to_user(
     payload = None
     try:
         settings = await refresh_push_brand(db, cfg, 'promo_push_text')
-        payload = await prepare_promo_push(db, user, settings=settings)
+        latest = await db.read('SELECT broadcast_opt_out FROM users WHERE user_id=?', (user_id,))
+        if latest and not latest['broadcast_opt_out']:
+            payload = await prepare_promo_push(db, user, settings=settings)
         if payload:
-            latest = await db.read('SELECT broadcast_opt_out FROM users WHERE user_id=?', (user_id,))
-            if latest and latest['broadcast_opt_out']:
-                payload = None
+            text, markup, code, _ = payload
+            touch_id, markup = await prepare_campaign(db, user_id, 'promo', markup)
+            media_id = settings.get('media_id') or ''
+            media_type = settings.get('media_type') or 'photo'
+            if media_id:
+                await _send_push_media(bot, user_id, media_id, media_type, text, markup, retry_flood=retry_flood)
             else:
-                text, markup, code, _ = payload
-                touch_id, markup = await prepare_campaign(db, user_id, 'promo', markup)
-                media_id = settings.get('media_id') or ''
-                media_type = settings.get('media_type') or 'photo'
-                if media_id:
-                    await _send_push_media(bot, user_id, media_id, media_type, text, markup, retry_flood=retry_flood)
-                else:
-                    await _send_push_text(bot, user_id, text, markup, retry_flood=retry_flood)
-                await campaign_delivered(db, touch_id)
+                await _send_push_text(bot, user_id, text, markup, retry_flood=retry_flood)
+            await campaign_delivered(db, touch_id)
     except (TelegramAPIError, TimeoutError) as exc:
         retry_at = _retry_at(exc)
         timed_out = isinstance(exc, TimeoutError)
@@ -725,7 +723,7 @@ async def dispatch_promo_expiry_reminders(
                 entry = await db.read(
                     """SELECT id, title, rub, stars FROM tariffs
                        WHERE active=1 AND (channel_ids!='' OR delivery_urls!='[]' OR allow_no_channel=1)
-                       ORDER BY CASE WHEN duration_days<=3 THEN 0 ELSE 1 END, rub ASC, stars ASC, id ASC
+                       ORDER BY CASE WHEN duration_days BETWEEN 1 AND 3 THEN 0 ELSE 1 END, rub ASC, stars ASC, id ASC
                        LIMIT 1"""
                 )
                 if entry:
@@ -759,7 +757,6 @@ async def dispatch_winback_pushes(
     limit: int = 15,
 ) -> int:
     """Send a single winback push with 30% discount to non-buying cold leads after 28 hours."""
-    del shop
     cfg = await push_settings(db)
     if cfg.get('promo_push_enabled') != '1' or (cfg.get('promo_push_mode') or 'shared') != 'personal':
         return 0
@@ -799,15 +796,14 @@ async def dispatch_winback_pushes(
         )
         if not rows:
             return 0
-        ultra = await db.read(
-            """SELECT id, title, rub, stars FROM tariffs
-               WHERE active=1 AND (LOWER(tier)='ultra' OR UPPER(title) LIKE '%ВСЁ СРАЗУ%' OR UPPER(title) LIKE '%ВСЕ СРАЗУ%')
-               LIMIT 1"""
-        )
+        ultra = next((tariff for tariff in await shop.catalogs()
+                      if tariff_tier_kind(tariff['title'], tariff.get('tier', '')) == 'ultra'
+                      and (tariff['channel_ids'] or tariff['delivery_urls'] != '[]'
+                           or tariff['allow_no_channel'])), None)
         entry = await db.read(
             """SELECT id, title, rub, stars FROM tariffs
                WHERE active=1 AND (channel_ids!='' OR delivery_urls!='[]' OR allow_no_channel=1)
-               ORDER BY CASE WHEN duration_days<=3 THEN 0 ELSE 1 END, rub ASC, stars ASC, id ASC
+               ORDER BY CASE WHEN duration_days BETWEEN 1 AND 3 THEN 0 ELSE 1 END, rub ASC, stars ASC, id ASC
                LIMIT 1"""
         )
         for row in rows:
@@ -826,25 +822,28 @@ async def dispatch_winback_pushes(
                 (code, row['user_id']),
             )
             buttons: list[tuple] = []
-            if ultra:
-                u_disc, _ = price_with_promo(ultra['rub'], ultra['stars'], wb_disc, wb_pct)
-                buttons.append((cb(f'🔥 Забрать «ВСЁ СРАЗУ» навсегда за {fmt_rub(u_disc)} ₽', f"claim_pay:{ultra['id']}:{code}", style='success'),))
-            if entry:
-                e_disc, _ = price_with_promo(entry['rub'], entry['stars'], wb_disc, wb_pct)
-                e_name = button_tariff_name(entry['title'], 'пропуск')
-                buttons.append((cb(f'⚡ Взять «{e_name}» за {fmt_rub(e_disc)} ₽', f"claim_pay:{entry['id']}:{code}"),))
-            buttons.append((cb('📂 Открыть весь каталог со скидкой 30%', f'claim_promo:{code}'),))
+            price_lines = []
+            featured = {tariff['id']: tariff for tariff in (entry, ultra) if tariff}
+            for tariff in featured.values():
+                discounted_rub, _ = price_with_promo(tariff['rub'], tariff['stars'], wb_disc, wb_pct)
+                name = button_tariff_name(tariff['title'])
+                style = 'success' if tariff is ultra else None
+                buttons.append((cb(f"Взять «{name}» за {fmt_rub(discounted_rub)} ₽",
+                                   f"claim_pay:{tariff['id']}:{code}", style=style),))
+                price_lines.append(
+                    f"• {esc(tariff['title'])}: <b>{fmt_rub(discounted_rub)} ₽</b> "
+                    f"вместо {fmt_rub(tariff['rub'])} ₽\n"
+                )
+            buttons.append((cb(f'📂 Открыть весь каталог со скидкой {wb_pct}%', f'claim_promo:{code}'),))
             text = (
                 f"👋 <b>Давно не заходил в {esc(project_name)}</b>\n"
                 "За это время в архивы выгрузили больше 40 новых эксклюзивных роликов.\n"
-                "Мы выдали тебе финальный промокод на <b>максимальную скидку -30%</b>. Он действует ровно 12 часов:\n"
-                "• Пропуск TikTok (3 дн.): <b>133 ₽</b> вместо 190 ₽\n"
-                "• «ВСЁ СРАЗУ» навсегда: <b>693 ₽</b> вместо 990 ₽\n"
+                f"Твой промокод на <b>скидку {wb_pct}%</b> действует {ttl_hours} ч.\n"
+                f"{''.join(price_lines)}"
                 "👇 <b>Активируй в 1 клик, пока действует скидка:</b>"
             )
             touch_id, tracked_markup = await prepare_campaign(db, row['user_id'], 'winback', kb(*buttons))
             if await safe_send_push_text(bot, row['user_id'], text, tracked_markup):
                 await campaign_delivered(db, touch_id)
                 sent += 1
-    return sent
     return sent

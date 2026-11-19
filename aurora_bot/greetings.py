@@ -12,7 +12,7 @@ from aiogram.types import ChatJoinRequest, ChatMemberUpdated
 
 from .access import resolve_join_request
 from .db import Database, in_seconds, now
-from .ui import cb, kb, link, rendered_section, send_text
+from .ui import cb, esc, kb, link, rendered_section, send_text
 
 log = logging.getLogger(__name__)
 WELCOME_CHAT_TYPES = ('channel', 'supergroup')
@@ -105,7 +105,7 @@ async def inspect_channel(db: Database, bot: Bot, chat_id: int):
                                  can_invite=getattr(member, 'can_invite_users', False), timestamp=int(time()))
 
 
-async def send_welcome(bot: Bot, db: Database, request: ChatJoinRequest, event_id: str):
+async def send_welcome(bot: Bot, db: Database, request: ChatJoinRequest, event_id: str, *, paid_channel: bool = False):
     bot_user = await bot.me()
     user_name = (getattr(request.from_user, 'full_name', None) or '').strip() or 'друг'
     channel_title = (getattr(request.chat, 'title', None) or '').strip() or 'канал'
@@ -117,7 +117,11 @@ async def send_welcome(bot: Bot, db: Database, request: ChatJoinRequest, event_i
         channel=channel_title,
         bot_username=bot_username,
     )
-    text = row['value']
+    text = (
+        f"<b>{esc(user_name)}, доступ в «{esc(channel_title)}» выдаётся после оплаты в боте.</b>\n\n"
+        "Открой каталог, чтобы выбрать тариф."
+        if paid_channel else row['value']
+    )
     cta_button = (
         link(WELCOME_CATALOG_BUTTON, f'https://t.me/{bot_username}?start=g_{event_id}', style='success')
         if bot_username else cb(WELCOME_CATALOG_BUTTON, 'catalog', style='success')
@@ -180,7 +184,10 @@ async def greet_request(bot: Bot, db: Database, request: ChatJoinRequest, *, pai
     channel, event_id, sent = claimed
     if not sent:
         try:
-            await asyncio.wait_for(send_welcome(bot, db, request, event_id), timeout=5 if getattr(request, 'query_id', None) else 12)
+            await asyncio.wait_for(
+                send_welcome(bot, db, request, event_id, paid_channel=paid_channel),
+                timeout=5 if getattr(request, 'query_id', None) else 12,
+            )
             timestamp = now()
             def delivered(con):
                 con.execute('UPDATE greeting_events SET sent_at=COALESCE(sent_at,?) WHERE id=?',

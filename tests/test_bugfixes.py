@@ -215,7 +215,7 @@ class AuditBugfixesTests(unittest.IsolatedAsyncioTestCase):
         # Upgrade startup runs one-time backfill and upgrades schema to v28.
         upgraded = Database(legacy_path)
         await upgraded.init()
-        self.assertEqual((await upgraded.read('PRAGMA user_version'))['user_version'], 28)
+        self.assertEqual((await upgraded.read('PRAGMA user_version'))['user_version'], 30)
         self.assertEqual((await upgraded.setting('stars_ledger_offset'))['value'], '0')
         self.assertEqual((await upgraded.setting('payment_gap_recovery_v1'))['value'], '1')
 
@@ -291,7 +291,7 @@ class AuditBugfixesTests(unittest.IsolatedAsyncioTestCase):
 
         upgraded = Database(legacy_path)
         await upgraded.init()
-        self.assertEqual((await upgraded.read('PRAGMA user_version'))['user_version'], 28)
+        self.assertEqual((await upgraded.read('PRAGMA user_version'))['user_version'], 30)
         self.assertEqual((await upgraded.setting('payment_gap_recovery_v2'))['value'], '1')
         for oid in (cp_paid['id'], cp_exp['id'], gw_paid['id']):
             self.assertIsNone((await upgraded.read('SELECT reconcile_at FROM orders WHERE id=?', (oid,)))['reconcile_at'])

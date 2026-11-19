@@ -283,10 +283,10 @@ DEFAULT_SETTINGS = {
     'promo_push_ttl_hours': '3',
     'promo_push_delay_min': '240',
     'promo_push_text': (
-        "<b>{name}, оставили для тебя закрытую скидку {discount}</b> 🔑\n\n"
+        "<b>{name}, оставили для тебя закрытую скидку {discount} ₽</b> 🔑\n\n"
         "Вижу, ты заглядывал в {project_name}, но доступ так и не забрал. "
         "Держи личный код <code>{code}</code>{ttl_note} — "
-        "с ним даже полный пакет из 5 каналов навсегда выйдет <b>952 ₽</b> вместо 1 190 ₽.\n\n"
+        "он снизит цену доступа. Итоговую цену увидишь в карточке тарифа.\n\n"
         "👇 <b>Жми ниже — скидка применится сама в 1 клик:</b>"
     ),
     'review_push_enabled': '0',
@@ -400,6 +400,23 @@ V26_SECTION_DIGESTS = {
 V27_SECTION_DIGESTS = {
     'join_welcome': '03f7a043041d374fa91124363dc7a332e2b059086df4c98a40872e4a15c90116',
 }
+
+V28_SETTINGS_DIGESTS = {
+    'join_welcome': '0e3d0ac97dc118e438b5405040be011fec9e45de460ae19d37ca7cd75a8550ef',
+    'welcome': '14cd5393b046df148f4f324f7d499b1e5933dcff5ac91145a190c7e68b3273e5',
+    'welcome_back': '3859a8afff91a75bc0c751f17452de8c57c980c1f0675ec517c52b9f1eca9b5d',
+    'catalog': 'fc5f676b405da7ffee1cbed6eeb23e8aedc1c79bc73f469f1d8250933eab4ec9',
+    'help': '1c6dc35651d584f1d46ed1b750d4fdb7de27b3c6be37b67c40400ff778eda8d6',
+    'info': 'fcf725c419fcaa2228b59f249e82fd2ba89de5e55caf3f51651175eacd54f961',
+    'promo_push_text': 'd99cd73a0b4ea29693e435da095ca5125cda3f2005e55c1bdda3021592c93a9e',
+    'review_push_text': 'fde92e335f48a5869a47f7a564c0917fedcdca9894522db0ddecf6f8d2eaec73',
+    'promo_push_delay_min': '624b60c58c9d8bfb6ff1886c2fd605d2adeb6ea4da576068201b6c6958ce93f4',
+    'promo_push_discount': '9ae2bdd7beedc2e766c6b76585530e16925115707dc7a06ab5ee4aa2776b2c7b',
+    'promo_push_ttl_hours': '5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9',
+    'review_push_delay_min': '2abaca4911e68fa9bfbf3482ee797fd5b9045b841fdff7253557c5fe15de6477',
+    'review_push_max_per_user': '4e07408562bedb8b60ce05c1decfe3ad16b72230967de01f640b7e4729b49fce',
+}
+V29_PROMO_TEXT_DIGEST = 'a384c35bf18189e23ec8b1e47b35d2cc767b0e6aca052be092045ab1866be097'
 
 SEED_TARIFFS = [
     (
@@ -1042,6 +1059,7 @@ class Database:
         con = sqlite3.connect(self.path, timeout=20)
         try:
             con.row_factory = sqlite3.Row
+            con.create_function('UNICODE_UPPER', 1, str.upper, deterministic=True)
             con.execute('PRAGMA foreign_keys=ON')
             con.execute('PRAGMA busy_timeout=20000')
             yield con
@@ -1636,47 +1654,21 @@ class Database:
                         con.execute('PRAGMA user_version=28')
 
                     if version < 29:
-                        for key in ('join_welcome', 'welcome', 'welcome_back', 'catalog', 'help', 'info', 'promo_push_text', 'review_push_text'):
+                        for key, digest in V28_SETTINGS_DIGESTS.items():
                             row = con.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
-                            if row:
-                                val = row[0]
-                                if val != 'Custom welcome text {name}':
-                                    con.execute('UPDATE settings SET value=? WHERE key=?', (DEFAULT_SETTINGS[key], key))
-                        con.execute("UPDATE settings SET value='240' WHERE key='promo_push_delay_min'")
-                        con.execute("UPDATE settings SET value='20%' WHERE key='promo_push_discount'")
-                        con.execute("UPDATE settings SET value='3' WHERE key='promo_push_ttl_hours'")
-                        con.execute("UPDATE settings SET value='90' WHERE key='review_push_delay_min'")
-                        con.execute("UPDATE settings SET value='24' WHERE key='review_push_interval_hours'")
-                        con.execute("UPDATE settings SET value='2' WHERE key='review_push_max_per_user'")
-                        con.execute("UPDATE settings SET media_id='', media_type='' WHERE key='payment'")
-                        con.execute("UPDATE settings SET value=CAST(CAST(COALESCE(value,'1') AS INTEGER)+1 AS TEXT) WHERE key='menu_revision'")
-
-                        for idx, (t_title, t_desc, t_rub, t_stars, t_days, t_prev) in enumerate(SEED_TARIFFS, 1):
-                            tier_val = 'ultra' if ('ВСЁ СРАЗУ' in t_title or 'ULTRA' in t_title.upper()) else ''
-                            is_act = 1 if idx <= 5 else 0
-                            exists = con.execute('SELECT * FROM tariffs WHERE id=?', (idx,)).fetchone()
-                            if exists:
-                                if idx <= 5:
-                                    rub_val = t_rub if exists['rub'] != 777 else 777
-                                    stars_val = t_stars if exists['stars'] != 400 else 400
-                                    days_val = t_days if (exists['duration_days'] != 0 or exists['delivery_urls'] == '[]') else 0
-                                    con.execute(
-                                        """UPDATE tariffs SET title=?, description=?, rub=?, stars=?,
-                                           duration_days=?, preview_description=?, active=1, tier=?
-                                           WHERE id=?""",
-                                        (t_title, t_desc, rub_val, stars_val, days_val, t_prev, tier_val, idx),
-                                    )
-                                else:
-                                    con.execute('UPDATE tariffs SET active=0 WHERE id=?', (idx,))
-                            else:
-                                con.execute(
-                                    """INSERT INTO tariffs(id, title, description, rub, stars, duration_days,
-                                       preview_description, active, tier)
-                                       VALUES(?,?,?,?,?,?,?,?,?)""",
-                                    (idx, t_title, t_desc, t_rub, t_stars, t_days, t_prev, is_act, tier_val),
-                                )
-                        con.execute('UPDATE tariffs SET active=0 WHERE id>5')
+                            if row and hashlib.sha256(row[0].encode('utf8')).hexdigest() == digest:
+                                con.execute('UPDATE settings SET value=? WHERE key=?', (DEFAULT_SETTINGS[key], key))
+                        con.execute("UPDATE settings SET value=CAST(value AS INTEGER)+1 WHERE key='menu_revision'")
                         con.execute('PRAGMA user_version=29')
+
+                    if version < 30:
+                        row = con.execute("SELECT value FROM settings WHERE key='promo_push_text'").fetchone()
+                        if row and hashlib.sha256(row[0].encode('utf8')).hexdigest() == V29_PROMO_TEXT_DIGEST:
+                            con.execute("UPDATE settings SET value=? WHERE key='promo_push_text'",
+                                        (DEFAULT_SETTINGS['promo_push_text'],))
+                        con.execute("UPDATE tariffs SET tier='diamond' WHERE title=? AND tier=''",
+                                    (SEED_TARIFFS[6][0],))
+                        con.execute('PRAGMA user_version=30')
 
                     recovery_row = con.execute(
                         "SELECT value FROM settings WHERE key='payment_gap_recovery_v1'"
@@ -1714,9 +1706,13 @@ class Database:
                         )
 
                     if not con.execute('SELECT 1 FROM tariffs LIMIT 1').fetchone():
-                        con.executemany('INSERT INTO tariffs(title,description,rub,stars,duration_days,preview_description) VALUES(?,?,?,?,?,?)', SEED_TARIFFS)
-                        con.execute("UPDATE tariffs SET tier='diamond' WHERE tier='' AND UPPER(title) LIKE '%DIAMOND%'")
-                        con.execute("UPDATE tariffs SET tier='ultra' WHERE tier='' AND UPPER(title) LIKE '%ULTRA%'")
+                        tiers = {5: 'ultra', 6: 'ultra', 7: 'diamond'}
+                        con.executemany(
+                            """INSERT INTO tariffs(title,description,rub,stars,duration_days,preview_description,
+                               active,tier) VALUES(?,?,?,?,?,?,?,?)""",
+                            (tariff + (int(idx <= 5), tiers.get(idx, ''))
+                             for idx, tariff in enumerate(SEED_TARIFFS, 1)),
+                        )
 
                     # Seed dormant promo code for broadcast campaigns; disabled on entry
                     # so cold traffic checks out at storefront prices without extra friction.

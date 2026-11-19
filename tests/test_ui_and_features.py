@@ -76,17 +76,19 @@ class RecentPurchasesAndStatsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_tariffs_have_emojis_and_luxurynew_promo(self):
         tariffs = await self.shop.catalogs()
-        self.assertEqual(len(tariffs), 4)
+        self.assertEqual(len(tariffs), 5)
         for t in tariffs:
             self.assertTrue(any(ch in t["title"] for ch in ("⚡", "🔥", "🎀", "🍑", "😈", "⭐️", "🏆", "👑", "🖤")))
         self.assertEqual([(t["rub"], t["stars"], t["duration_days"]) for t in tariffs], [
             (190, 99, 3),
             (590, 299, 30),
+            (790, 410, 30),
+            (890, 460, 30),
             (990, 499, 0),
-            (2490, 1250, 0),
         ])
-        self.assertIn('ВСЁ СРАЗУ', tariffs[2]["title"])
-        self.assertIn('VIP MAX', tariffs[3]["title"])
+        self.assertIn('ВСЁ СРАЗУ', tariffs[4]["title"])
+        self.assertEqual(tariffs[4]['tier'], 'ultra')
+        self.assertEqual((await self.shop.get_tariff(7))['tier'], 'diamond')
         for t in tariffs:
             self.assertLessEqual(len(t["title"]), 38)
 

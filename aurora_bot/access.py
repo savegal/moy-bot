@@ -228,7 +228,7 @@ class AccessManager:
             urls = json.loads(order['delivery_urls'])
             text = (f"✅ <b>{heading}</b>\n\n{html.escape(order['title'])}\n"
                     f"{term_line}\n\n"
-                    "Открыть доступ можно в разделе «👤 Профиль / Промокод» → «🔓 Мои доступы».")
+                    "Открыть доступ можно в разделе «🔓 Мои доступы».")
             rows = [(link(f'🔗 Открыть канал {index}', url, style='success'),)
                     for index, url in enumerate(urls, 1)]
             grant_rows = await self.db.read(
@@ -285,6 +285,7 @@ class AccessManager:
                   AND o.status='paid' AND o.refund_requested_at IS NULL
                 ORDER BY g.id DESC LIMIT 1""", (chat_id, user_id, now()))
             if grant:
+                # Keep approval serialized with refunds and access revocation.
                 await resolve_join_request(request, 'approve')
                 await self.db.execute(
                     "UPDATE grants SET state='joined',joined_at=COALESCE(joined_at, ?) WHERE id=?",

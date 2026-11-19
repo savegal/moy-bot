@@ -955,7 +955,7 @@ async def tariff_preview_admin(call: CallbackQuery, shop: Shop):
     await call.answer()
     details = len(parts) == 4
     buyers = None if details else await get_live_tariff_buyers(shop, shop.db, tariff)
-    text = product_text(tariff, tariff['stars'], buyers=buyers)
+    text = product_text(tariff, tariff['stars'], buyers=buyers, project_name=await shop.db.project_name())
     toggle = (cb('📦 Карточка', f'adm:tpreview:{tid}') if details
               else cb('👀 Что внутри?', f'adm:tpreview:{tid}:details'))
     media_id, media_type = tariff_view_media(tariff, details=details)

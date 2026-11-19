@@ -16,7 +16,7 @@ from aurora_bot.db import Database
 from aurora_bot.service import Shop
 from aurora_bot.payments import Payments
 from aurora_bot.access import AccessManager
-from aurora_bot.workers import maintain_access, reconcile_external, reconcile_stars, run_periodically
+from aurora_bot.workers import dispatch_marketing, maintain_access, reconcile_external, reconcile_stars, run_periodically
 from aurora_bot.server import start_server
 from aurora_bot.greetings import retry_welcome_approvals
 from aurora_bot.handlers_admin import router as admin_router
@@ -80,6 +80,7 @@ async def main():
         await bot.delete_webhook(drop_pending_updates=False)
         jobs = [
             ('access', 5, maintain_access, bot, db, access, config),
+            ('marketing', 30, dispatch_marketing, bot, db, shop),
             ('stars', config.poll_seconds, reconcile_stars, bot, db, shop),
             ('welcome_approvals', 5, retry_welcome_approvals, bot, db),
             ('external', config.poll_seconds, reconcile_external, config, db, payments),

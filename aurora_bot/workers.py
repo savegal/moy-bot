@@ -266,14 +266,23 @@ async def maintain_access(bot: Bot, db: Database, access: AccessManager, config:
     await access.revoke_expired(bot)
     await access.provision(bot)
     await dispatch_whale_alerts(bot, db, config)
-    await dispatch_cold_start_nudges(bot, db, access.shop)
-    await dispatch_abandoned_cart_reminders(bot, db, access.shop)
-    await dispatch_tariff_view_reminders(bot, db, access.shop)
-    await dispatch_trial_upsell_touchpoints(bot, db, access.shop)
-    await dispatch_promo_pushes(bot, db, access.shop)
-    await dispatch_promo_expiry_reminders(bot, db, access.shop)
-    await dispatch_winback_pushes(bot, db, access.shop)
-    await dispatch_review_pushes(bot, db, access.shop)
+
+
+async def dispatch_marketing(bot: Bot, db: Database, shop: Shop):
+    for dispatch in (
+        dispatch_cold_start_nudges,
+        dispatch_abandoned_cart_reminders,
+        dispatch_tariff_view_reminders,
+        dispatch_trial_upsell_touchpoints,
+        dispatch_promo_pushes,
+        dispatch_promo_expiry_reminders,
+        dispatch_winback_pushes,
+        dispatch_review_pushes,
+    ):
+        try:
+            await dispatch(bot, db, shop)
+        except Exception:
+            logger.exception('%s failed, will retry', dispatch.__name__)
 
 
 async def run_periodically(name, interval, operation, *args):
